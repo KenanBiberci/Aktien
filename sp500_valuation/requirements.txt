@@ -6,5 +6,9 @@ requests>=2.31
 tqdm>=4.66
 pyarrow>=14.0
 streamlit>=1.30
+# starlette 1.4.0 machte GZipResponder.thread_minimum_size zur Pflicht und ist
+# mit Streamlits Gzip-Middleware inkompatibel (App startet sonst mit HTTP 500).
+# Auf <1.4 begrenzen, bis Streamlit die Signatur nachzieht.
+starlette<1.4
 PyYAML>=6.0
 lxml>=5.0
