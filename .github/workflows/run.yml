@@ -52,7 +52,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/latest.parquet data/latest.csv output/latest.xlsx output/sp500_valuation_*.xlsx 2>/dev/null || true
+          # Jede Datei einzeln stagen: ein fehlender/ignorierter Pfad darf nicht
+          # das gesamte 'git add' abbrechen (sonst wird nichts committet).
+          git add -f data/latest.parquet 2>/dev/null || true
+          [ -f data/latest.csv ] && git add -f data/latest.csv || true
+          git add -f output/latest.xlsx 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "Keine Änderungen zu committen."
           else
