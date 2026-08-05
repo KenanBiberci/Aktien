@@ -2,8 +2,8 @@
 
 Zieht für **alle S&P-500-Aktien** automatisch Fundamentaldaten (yfinance), rechnet sie durch
 ein festes Bewertungsmodell (9 Methoden, Equity-Investments-Werkzeugkasten) und gibt das
-Ergebnis als **Excel** mit **Buy/Hold/Sell-Signal** aus. Alles mit **einem Befehl**, wiederholbar,
-und vom **iPhone** aus abrufbar.
+Ergebnis als **Excel** mit **Buy/Hold/Sell-Signal** aus. Alle Geldbeträge werden nach **EUR**
+umgerechnet. Alles mit **einem Befehl**, wiederholbar, und vom **iPhone** aus abrufbar.
 
 > ⚠️ **Keine Anlageberatung.** Lern-/Analyse-Tool. Signale sind regelbasiert und nur so gut
 > wie die kostenlosen Daten und die gewählten Annahmen. Eigene Prüfung und Risikostreuung nötig.
@@ -123,6 +123,13 @@ Forward-EPS/Analystenziele. Ohne Key → nur yfinance.
 Ziel: Ergebnis vom iPhone abrufen und aktualisieren, **ohne** dass das Handy die 500 Titel
 selbst rechnet. Die schwere Berechnung läuft in der **Cloud** (GitHub Actions), das iPhone
 zeigt nur die fertige Tabelle über die **Streamlit-App**.
+
+**App-Funktionen** (mobil optimiert, Tabs):
+- **Übersicht** mit Signal-Kacheln (Anzahl STRONG BUY / BUY / HOLD / REDUCE).
+- **Screener** — Tabelle mit Ticker **und Firmennamen**, Kursen in **EUR**, farbigen Signalen; Excel-Download.
+- **Detail** — je Aktie alle 9 Methoden + PVGO + Kennzahlen.
+- **PDF-Report** — für ausgewählte Aktien eine PDF-Analyse erzeugen und herunterladen (eine Seite je Titel).
+- **„Neu berechnen"** — stößt den Cloud-Lauf per `workflow_dispatch` an.
 
 1. **Repo forken/pushen** zu GitHub.
 2. **(optional)** `FMP_API_KEY` unter *Settings → Secrets and variables → Actions* hinterlegen.

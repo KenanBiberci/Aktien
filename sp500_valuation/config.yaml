@@ -24,6 +24,14 @@ fallback_multiples:
   pb: 3
   ev_ebitda: 12
 
+# --- Währung -----------------------------------------------------------------
+# Die Rohdaten (US-Aktien) kommen in USD. Alle Geldbeträge in der Ausgabe werden
+# nach EUR umgerechnet. Der Kurs wird live geholt (yfinance EURUSD=X);
+# schlägt das fehl, greift der Fallback (USD je 1 EUR).
+currency:
+  target: EUR
+  fallback_eurusd: 1.08     # 1 EUR = 1.08 USD (Näherung, falls Live-Kurs fehlt)
+
 # --- Datenabruf --------------------------------------------------------------
 fetch:
   sleep_between_calls: 0.4  # Sekunden zwischen yfinance-Calls (Rate-Limit)

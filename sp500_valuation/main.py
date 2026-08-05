@@ -37,6 +37,13 @@ OUTPUT_DIR = BASE_DIR / "output"
 
 log = logging.getLogger("sp500")
 
+# Geldbeträge (je Aktie) die von USD nach EUR umgerechnet werden. Alle
+# Verhältnis-/Prozent-/Multiplikator-Spalten bleiben währungsneutral.
+MONETARY_COLS = [
+    "price", "target", "dps", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9",
+    "blended_fair_value", "no_growth_value", "pvgo",
+]
+
 
 def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
@@ -75,10 +82,16 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
     # --- Schritt 3: Sektor-Median-Multiplikatoren ---
     medians = valuation.compute_sector_medians(df)
 
-    # --- Schritt 4: Bewertung je Zeile ---
+    # --- Schritt 4: Bewertung je Zeile (in USD) ---
     valued = [valuation.value_row(row.to_dict(), medians, cfg)
               for _, row in df.iterrows()]
     result = pd.DataFrame(valued)
+
+    # --- Währungsumrechnung USD -> EUR (nur Geldbeträge, nach der Bewertung) ---
+    eurusd = fetch.get_eurusd_rate(cfg)          # USD je 1 EUR
+    result = _convert_to_eur(result, eurusd)
+    result["currency"] = cfg.get("currency", {}).get("target", "EUR")
+    result["fx_eurusd"] = eurusd
 
     # --- Report ---
     n_total = len(result)
@@ -113,6 +126,17 @@ def _write_outputs(result: pd.DataFrame, cfg: dict[str, Any],
     wb.save(dated_path)
     wb.save(latest_path)
     log.info("Workbook geschrieben: %s und %s", dated_path, latest_path)
+
+
+def _convert_to_eur(df: pd.DataFrame, eurusd: float) -> pd.DataFrame:
+    """Rechnet die Geldbeträge-Spalten von USD nach EUR (EUR = USD / EURUSD)."""
+    if not eurusd or eurusd <= 0:
+        return df
+    out = df.copy()
+    for col in MONETARY_COLS:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce") / eurusd
+    return out
 
 
 def _write_parquet(df: pd.DataFrame, path: Path) -> None:
