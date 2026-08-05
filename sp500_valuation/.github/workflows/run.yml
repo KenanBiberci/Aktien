@@ -1,0 +1,70 @@
+name: S&P-500 Valuation-Pipeline
+
+on:
+  # Werktags 1x/Tag (06:30 UTC) — schwere Berechnung in der Cloud.
+  schedule:
+    - cron: "30 6 * * 1-5"
+  # Manuell / aus der Streamlit-App per workflow_dispatch.
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Cache ignorieren und Rohdaten neu ziehen"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # nötig, um das frische Ergebnis zurück zu committen
+
+concurrency:
+  group: sp500-valuation
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sp500_valuation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}   # optional
+        run: |
+          if [ "${{ github.event.inputs.refresh }}" = "true" ]; then
+            python main.py --refresh
+          else
+            python main.py
+          fi
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/latest.parquet data/latest.csv output/latest.xlsx output/sp500_valuation_*.xlsx 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Keine Änderungen zu committen."
+          else
+            git commit -m "chore: frisches Valuation-Ergebnis ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sp500-valuation-latest
+          path: |
+            sp500_valuation/output/latest.xlsx
+            sp500_valuation/data/latest.parquet
+          if-no-files-found: warn
