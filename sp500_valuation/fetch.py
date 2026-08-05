@@ -201,6 +201,15 @@ def get_european_constituents() -> pd.DataFrame:
     return df[["symbol", "security", "sector", "yahoo"]]
 
 
+def get_additional_constituents() -> pd.DataFrame:
+    """Weitere große Titel außerhalb des S&P 500 (US-notiert + große ADRs, in USD)."""
+    df = pd.DataFrame(ADDITIONAL_STOCKS, columns=["yahoo", "security", "sector"])
+    df["symbol"] = df["yahoo"]
+    df = df.drop_duplicates(subset="yahoo").reset_index(drop=True)
+    log.info("Zusätzliche Liste: %d Titel.", len(df))
+    return df[["symbol", "security", "sector", "yahoo"]]
+
+
 # (yahoo, Name, GICS-Sektor) — große Werte quer durch Europa
 EUROPEAN_STOCKS: list[tuple[str, str, str]] = [
     # Deutschland (.DE)
@@ -356,6 +365,52 @@ EUROPEAN_STOCKS: list[tuple[str, str, str]] = [
     ("OMV.VI", "OMV", "Energy"),
     ("EBS.VI", "Erste Group Bank", "Financials"),
     ("VER.VI", "Verbund", "Utilities"),
+]
+
+# Weitere große Titel außerhalb des S&P 500 — US-notiert bzw. große ADRs (alle USD).
+# Doppelte zum S&P 500 werden beim Zusammenführen automatisch entfernt.
+ADDITIONAL_STOCKS: list[tuple[str, str, str]] = [
+    # US-notiert, (noch) nicht/erst spät im S&P 500 oder ausländischer Sitz
+    ("SPOT", "Spotify", "Communication Services"),
+    ("ARM", "Arm Holdings", "Information Technology"),
+    ("SHOP", "Shopify", "Information Technology"),
+    ("SNOW", "Snowflake", "Information Technology"),
+    ("COIN", "Coinbase", "Financials"),
+    ("RBLX", "Roblox", "Communication Services"),
+    ("RIVN", "Rivian", "Consumer Discretionary"),
+    ("LCID", "Lucid Group", "Consumer Discretionary"),
+    ("U", "Unity Software", "Information Technology"),
+    ("HOOD", "Robinhood", "Financials"),
+    ("SOFI", "SoFi Technologies", "Financials"),
+    ("AFRM", "Affirm", "Financials"),
+    ("DKNG", "DraftKings", "Consumer Discretionary"),
+    ("CVNA", "Carvana", "Consumer Discretionary"),
+    ("NET", "Cloudflare", "Information Technology"),
+    ("MDB", "MongoDB", "Information Technology"),
+    ("DASH", "DoorDash", "Consumer Discretionary"),
+    ("ABNB", "Airbnb", "Consumer Discretionary"),
+    ("PLTR", "Palantir", "Information Technology"),
+    ("SNAP", "Snap", "Communication Services"),
+    ("PINS", "Pinterest", "Communication Services"),
+    ("RKLB", "Rocket Lab", "Industrials"),
+    ("DDOG", "Datadog", "Information Technology"),
+    ("ZS", "Zscaler", "Information Technology"),
+    ("TTD", "The Trade Desk", "Communication Services"),
+    ("MELI", "MercadoLibre", "Consumer Discretionary"),
+    # Große internationale ADRs (USD)
+    ("TSM", "Taiwan Semiconductor", "Information Technology"),
+    ("BABA", "Alibaba", "Consumer Discretionary"),
+    ("PDD", "PDD Holdings", "Consumer Discretionary"),
+    ("JD", "JD.com", "Consumer Discretionary"),
+    ("BIDU", "Baidu", "Communication Services"),
+    ("NIO", "NIO", "Consumer Discretionary"),
+    ("LI", "Li Auto", "Consumer Discretionary"),
+    ("XPEV", "XPeng", "Consumer Discretionary"),
+    ("SE", "Sea Limited", "Communication Services"),
+    ("NU", "Nu Holdings", "Financials"),
+    ("GRAB", "Grab Holdings", "Industrials"),
+    ("SONY", "Sony Group", "Consumer Discretionary"),
+    ("TM", "Toyota Motor", "Consumer Discretionary"),
 ]
 
 
