@@ -41,6 +41,13 @@ currency:
     SEK: 11.30
     NOK: 11.70
 
+# --- Plausibilitätsfilter ----------------------------------------------------
+# Einzelne Methoden-Werte, die weiter als dieses Vielfache vom Kurs entfernt sind,
+# werden beim Blend ignoriert (Schutz vor Datenfehlern / mechanischen Ausreißern).
+plausibility:
+  min_ratio: 0.2      # unter 0,2x Kurs -> verwerfen
+  max_ratio: 5.0      # über 5x Kurs -> verwerfen
+
 # --- Backtest ----------------------------------------------------------------
 # Historische 12-Monats-Renditen (jahresweise) über so viele Jahre zurück.
 backtest:

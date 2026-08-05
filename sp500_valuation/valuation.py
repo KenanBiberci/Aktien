@@ -336,6 +336,15 @@ def blend_and_signal(
     selected += [methods_map.get(k, NaN) for k in ("m4", "m5", "m6", "m7", "m8")]
     selected = [x for x in selected if is_finite(x) and x > 0]
 
+    # Plausibilitätsfilter: Methoden-Werte, die absurd weit vom Kurs weg liegen
+    # (Datenfehler oder krasse mechanische Überschätzung, z. B. Mehrklassen-Aktien),
+    # vor dem Blend verwerfen. Band aus config (Standard 0,2x–5x Kurs).
+    band = cfg.get("plausibility", {})
+    lo = float(band.get("min_ratio", 0.2))
+    hi = float(band.get("max_ratio", 5.0))
+    if is_finite(price) and price > 0:
+        selected = [x for x in selected if lo * price <= x <= hi * price]
+
     n_methods = len(selected)
     blended_fair_value = float(median(selected)) if selected else NaN
     divergence = (max(selected) / min(selected) - 1) if len(selected) >= 2 else NaN
