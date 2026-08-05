@@ -29,6 +29,11 @@ PARQUET_PATH = BASE_DIR / "data" / "latest.parquet"
 CSV_FALLBACK = BASE_DIR / "data" / "latest.csv"
 XLSX_PATH = BASE_DIR / "output" / "latest.xlsx"
 
+# Mindestanzahl getesteter Jahre, damit Trefferquote/Ø-Rendite als aussagekräftig
+# gelten. Neuemissionen/Spinoffs (z. B. SanDisk, nur 1 Jahr) liefern sonst
+# irreführende Werte (+1130 %, 100 % Trefferquote).
+MIN_BT_YEARS = 5
+
 SIGNAL_ORDER = ["STRONG BUY", "BUY", "HOLD", "REDUCE", "N/A – Datenlücke"]
 SIGNAL_COLORS = {
     "STRONG BUY": "#1a7f37", "BUY": "#2da44e",
@@ -71,14 +76,34 @@ st.markdown(
 
 @st.cache_data(ttl=300)
 def load_data() -> pd.DataFrame | None:
+    df = None
     if PARQUET_PATH.exists():
         try:
-            return pd.read_parquet(PARQUET_PATH)
+            df = pd.read_parquet(PARQUET_PATH)
         except Exception:  # noqa: BLE001
-            pass
-    if CSV_FALLBACK.exists():
-        return pd.read_csv(CSV_FALLBACK)
-    return None
+            df = None
+    if df is None and CSV_FALLBACK.exists():
+        df = pd.read_csv(CSV_FALLBACK)
+    if df is None:
+        return None
+
+    # Backtest-Aussagekraft: Anzahl getesteter Jahre aus den Jahresrenditen ableiten.
+    # Titel mit zu kurzer Historie (Neuemissionen/Spinoffs) bekommen KEINE
+    # Trefferquote/Ø-Rendite, damit sie nicht mit Fantasiewerten oben auftauchen.
+    if "annual_returns_json" in df.columns:
+        df["n_years_1y"] = df["annual_returns_json"].apply(_n_years)
+        thin = df["n_years_1y"] < MIN_BT_YEARS
+        for col in ("win_rate_1y", "avg_return_1y"):
+            if col in df.columns:
+                df.loc[thin, col] = float("nan")
+    return df
+
+
+def _n_years(raw) -> int:
+    try:
+        return len(json.loads(raw).get("returns", [])) if isinstance(raw, str) else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def last_run() -> tuple[str, datetime | None]:
@@ -123,6 +148,11 @@ def _eur(v) -> str:
 
 def _pct(v) -> str:
     return f"{float(v) * 100:+.1f} %" if _is_num(v) else "—"
+
+
+def _pct0(v) -> str:
+    """Prozent ohne Vorzeichen (für Quoten wie die Trefferquote)."""
+    return f"{float(v) * 100:.0f} %" if _is_num(v) else "—"
 
 
 def _mult(v) -> str:
@@ -344,9 +374,19 @@ with tab_backtest:
             if not rets:
                 st.info("Keine Backtest-Daten für diesen Titel.")
             else:
+                thin = len(rets) < MIN_BT_YEARS
+                if thin:
+                    st.warning(
+                        f"⚠️ Nur **{len(rets)} Jahr(e)** Historie — Trefferquote und "
+                        f"Ø-Rendite sind **nicht aussagekräftig** (z. B. Neuemission/"
+                        f"Spinoff). Ein einzelnes Jahr kann durch den Börsenstart stark "
+                        f"verzerrt sein. Das Diagramm zeigt die vorhandenen Jahre nur "
+                        f"zur Orientierung.")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Trefferquote", _pct(brow.get("win_rate_1y")),
-                          help="Anteil der Jahre mit positivem 12-Monats-Ergebnis.")
+                # win_rate_1y/avg_return_1y sind für zu kurze Historie bereits NaN.
+                c1.metric("Trefferquote", _pct0(brow.get("win_rate_1y")),
+                          help="Anteil der Jahre mit positivem 12-Monats-Ergebnis "
+                               f"(erst ab {MIN_BT_YEARS} Jahren ausgewiesen).")
                 c2.metric("Ø 12M-Rendite", _pct(brow.get("avg_return_1y")))
                 c3.metric("Jahre getestet", str(len(rets)))
 
