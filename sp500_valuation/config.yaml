@@ -1,0 +1,31 @@
+# =============================================================================
+# config.yaml — zentrale Annahmen der S&P-500-Valuation-Pipeline
+# Alle Hebel hier anpassbar, ohne Code zu ändern (keine Magic Numbers im Code).
+# =============================================================================
+
+# --- Kapitalmarkt-Annahmen ---------------------------------------------------
+risk_free_rate: 0.043       # 10y-Treasury-Näherung
+equity_risk_premium: 0.05   # Marktrisikoprämie (für CAPM)
+terminal_growth: 0.03       # g (langfristiges Wachstum)
+stage1_years: 5             # N für 2-Stufen-DDM
+ddm_payout_gate: 0.25       # DDM-Methoden (M1-M3) nur wenn Payout >= diesem Wert
+default_tax: 0.21           # Steuersatz (für WACC after-tax Fremdkapitalkosten)
+
+# --- Signal-Schwellen (Ø-Upside) ---------------------------------------------
+signal_thresholds:
+  strong_buy: 0.30          # ab hier STRONG BUY (zusätzlich n_methods >= 3)
+  buy: 0.10                 # ab hier BUY
+  hold_floor: -0.10         # darunter = REDUCE
+
+# --- Globale Fallback-Multiplikatoren (nur falls Sektor-Median fehlt) --------
+fallback_multiples:
+  pe: 18
+  ps: 3
+  pb: 3
+  ev_ebitda: 12
+
+# --- Datenabruf --------------------------------------------------------------
+fetch:
+  sleep_between_calls: 0.4  # Sekunden zwischen yfinance-Calls (Rate-Limit)
+  max_retries: 3            # Retries mit Backoff bei fehlgeschlagenem Call
+  backoff_base: 1.5         # Backoff-Basis (Sekunden): base * 2**versuch

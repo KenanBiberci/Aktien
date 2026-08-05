@@ -1,0 +1,16 @@
+# Roh-Cache je Ticker (nicht versionieren — wird zur Laufzeit neu gefüllt)
+data/cache/*
+!data/cache/.gitkeep
+
+# Datierte Workbooks (nur latest.xlsx wird committet)
+output/sp500_valuation_*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
