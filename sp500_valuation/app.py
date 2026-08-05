@@ -231,6 +231,15 @@ view = view.sort_values(sort_col, ascending=False, na_position="last")
 
 st.caption(f"**{len(view)}** von {len(df)} Titeln")
 
+# Auswahllisten für Detail/Backtest/PDF: IMMER das ganze Universum (gefilterte
+# Titel zuerst), damit man jede Aktie wählen kann — auch wenn sie der Filter
+# gerade ausblendet (z. B. Spotify bei aktivem STRONG-BUY-Filter).
+ALL_NAMES = dict(zip(df["yahoo"].astype(str),
+                     df.get("security", df["yahoo"]).astype(str)))
+_view_ids = view["yahoo"].astype(str).tolist()
+ORDERED_IDS = _view_ids + [t for t in df["yahoo"].astype(str).tolist()
+                           if t not in set(_view_ids)]
+
 # =============================================================================
 # Tabs
 # =============================================================================
@@ -276,11 +285,9 @@ with tab_screener:
 
 # --- Detail ------------------------------------------------------------------
 with tab_detail:
-    if len(view):
-        opts = view["yahoo"].tolist()
-        names = dict(zip(view["yahoo"], view.get("security", view["yahoo"])))
-        sel = st.selectbox("Aktie wählen", options=opts,
-                           format_func=lambda t: signal_label(t, str(names.get(t, ""))))
+    if ORDERED_IDS:
+        sel = st.selectbox("Aktie wählen", options=ORDERED_IDS,
+                           format_func=lambda t: signal_label(t, str(ALL_NAMES.get(t, ""))))
         row = df[df["yahoo"] == sel].iloc[0]
 
         st.subheader(f"{row.get('security', sel)}  ·  {sel}")
@@ -319,10 +326,8 @@ with tab_backtest:
     if "annual_returns_json" not in df.columns:
         st.info("Backtest-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
     else:
-        bt_opts = view["yahoo"].tolist() if len(view) else df["yahoo"].tolist()
-        names_bt = dict(zip(df["yahoo"], df.get("security", df["yahoo"])))
-        sel_bt = st.selectbox("Aktie für den Backtest", options=bt_opts,
-                              format_func=lambda t: signal_label(t, str(names_bt.get(t, ""))),
+        sel_bt = st.selectbox("Aktie für den Backtest", options=ORDERED_IDS,
+                              format_func=lambda t: signal_label(t, str(ALL_NAMES.get(t, ""))),
                               key="bt_select")
         brow = df[df["yahoo"] == sel_bt].iloc[0]
         raw = brow.get("annual_returns_json")
@@ -375,12 +380,11 @@ with tab_pdf:
     st.markdown("**PDF-Aktienanalyse erstellen**")
     st.caption("Wähle eine oder mehrere Aktien — je Titel eine Seite mit allen "
                "Kennzahlen, den 9 Methoden und dem Signal.")
-    all_opts = view["yahoo"].tolist() if len(view) else df["yahoo"].tolist()
-    names_all = dict(zip(df["yahoo"], df.get("security", df["yahoo"])))
-    default_sel = all_opts[:5]
+    default_sel = ORDERED_IDS[:5]
     sel_tickers = st.multiselect(
-        "Aktien für den Report", options=all_opts, default=default_sel,
-        format_func=lambda t: signal_label(t, str(names_all.get(t, ""))))
+        "Aktien für den Report (alle Titel wählbar — auch per Tippen suchen)",
+        options=ORDERED_IDS, default=default_sel,
+        format_func=lambda t: signal_label(t, str(ALL_NAMES.get(t, ""))))
 
     if not sel_tickers:
         st.info("Bitte mindestens eine Aktie auswählen.")
