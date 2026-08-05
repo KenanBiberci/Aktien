@@ -12,3 +12,5 @@ streamlit>=1.30
 starlette<1.4
 PyYAML>=6.0
 lxml>=5.0
+fpdf2>=2.7
+

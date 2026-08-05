@@ -127,6 +127,32 @@ def _first_present(df: pd.DataFrame, candidates: list[str]) -> str:
 
 
 # =============================================================================
+# Wechselkurs USD -> EUR
+# =============================================================================
+def get_eurusd_rate(cfg: dict[str, Any]) -> float:
+    """USD je 1 EUR (yfinance EURUSD=X). Fehlschlag -> Fallback aus config."""
+    fallback = float(cfg.get("currency", {}).get("fallback_eurusd", 1.08))
+    try:
+        import yfinance as yf
+
+        tk = yf.Ticker("EURUSD=X")
+        rate = None
+        try:
+            rate = _clean_number(tk.fast_info.get("last_price"))
+        except Exception:  # noqa: BLE001
+            rate = None
+        if rate is None:
+            rate = _clean_number((tk.info or {}).get("regularMarketPrice"))
+        if rate is not None and 0.5 < rate < 2.0:
+            log.info("EUR/USD-Kurs: %.4f (1 EUR = %.4f USD).", rate, rate)
+            return float(rate)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("EUR/USD-Abruf fehlgeschlagen: %s", exc)
+    log.warning("EUR/USD-Live-Kurs nicht verfügbar, nutze Fallback %.4f.", fallback)
+    return fallback
+
+
+# =============================================================================
 # Schritt 2 — Datenabruf je Ticker (mit Caching, Retry, Rate-Limit)
 # =============================================================================
 def fetch_ticker_raw(

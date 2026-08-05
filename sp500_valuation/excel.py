@@ -23,7 +23,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 # --- Formate -----------------------------------------------------------------
 FONT = "Arial"
-FMT_PRICE = "#,##0.00"
+FMT_PRICE = '#,##0.00\\ "€"'   # Geldbeträge in Euro
 FMT_PCT = "0.0%"
 FMT_MULT = "0.0x"
 
@@ -52,7 +52,7 @@ SCREENER_COLS: list[tuple[str, str, str | None]] = [
     ("Ticker", "yahoo", None),
     ("Name", "security", None),
     ("Sektor", "sector", None),
-    ("Kurs", "price", FMT_PRICE),
+    ("Kurs (€)", "price", FMT_PRICE),
     ("KGV ttm", "kgv_ttm", FMT_MULT),
     ("KGV fwd", "kgv_fwd", FMT_MULT),
     ("Div-Rendite", "div_yield", FMT_PCT),
@@ -67,7 +67,7 @@ SCREENER_COLS: list[tuple[str, str, str | None]] = [
     ("M7 EV/EBITDA", "m7", FMT_PRICE),
     ("M8 DCF", "m8", FMT_PRICE),
     ("#Methoden", "n_methods", None),
-    ("Blended Fair Value", "blended_fair_value", FMT_PRICE),
+    ("Blended Fair Value (€)", "blended_fair_value", FMT_PRICE),
     ("Blended Upside", "blended_upside", FMT_PCT),
     ("Konsens-Upside", "consensus_upside", FMT_PCT),
     ("Ø-Upside", "avg_upside", FMT_PCT),
@@ -104,11 +104,18 @@ def build_workbook(
     wb = Workbook()
     wb.remove(wb.active)  # Default-Blatt weg
 
+    fx = None
+    if "fx_eurusd" in df.columns and len(df):
+        try:
+            fx = float(df["fx_eurusd"].dropna().iloc[0])
+        except Exception:  # noqa: BLE001
+            fx = None
+
     _sheet_screener(wb.create_sheet("Screener"), df)
     _sheet_screener(wb.create_sheet("Screener (Ø-Upside)"),
                     df.sort_values("avg_upside", ascending=False, na_position="last"))
     _sheet_assumptions(wb.create_sheet("Annahmen"), cfg, medians)
-    _sheet_methodik(wb.create_sheet("Methodik"), cfg, run_date)
+    _sheet_methodik(wb.create_sheet("Methodik"), cfg, run_date, fx)
     _sheet_top_ideas(wb.create_sheet("Top-Ideen"), df)
 
     if details:
@@ -245,13 +252,19 @@ def _sheet_assumptions(ws: Worksheet, cfg: dict[str, Any],
 # =============================================================================
 # c) Methodik
 # =============================================================================
-def _sheet_methodik(ws: Worksheet, cfg: dict[str, Any], run_date: datetime) -> None:
+def _sheet_methodik(ws: Worksheet, cfg: dict[str, Any], run_date: datetime,
+                    fx_eurusd: float | None = None) -> None:
     ws["A1"] = "Methodik & Disclaimer"
     ws["A1"].font = TITLE_FONT
     ws.column_dimensions["A"].width = 120
 
+    fx_line = (f"Währung: alle Geldbeträge in EUR. Umrechnung USD→EUR mit "
+               f"1 EUR = {fx_eurusd:.4f} USD (Stand des Laufs)."
+               if fx_eurusd else "Währung: EUR (Kurs USD→EUR nicht verfügbar, Fallback genutzt).")
+
     lines = [
         f"Datum des Laufs: {run_date.strftime('%Y-%m-%d %H:%M')}",
+        fx_line,
         "Datenquellen: yfinance (primär), optional Financial Modeling Prep (FMP_API_KEY). "
         "S&P-500-Liste: Wikipedia mit Fallback auf datasets/s-and-p-500-companies.",
         "",
