@@ -193,9 +193,14 @@ with st.expander("🔎 Filter & Sortierung", expanded=not query):
     sel_signals = st.multiselect(
         "Signal", options=present,
         default=[s for s in ("STRONG BUY", "BUY") if s in present])
-    min_upside = st.slider("Mindest-Ø-Upside", -0.50, 1.00, 0.0, 0.05, format="%.0f%%")
-    min_prob = st.slider("Mindest-Trefferquote (12M, ~20 J.)", 0.0, 1.0, 0.0, 0.05,
-                         format="%.0f%%", disabled=not has_prob,
+    # Regler in ganzen Prozent (−50 % … +200 % bzw. 0 % … 100 %); intern /100.
+    min_upside = st.slider("Mindest-Ø-Upside", min_value=-50, max_value=200,
+                           value=0, step=5, format="%d %%",
+                           help="Nur Aktien mit mindestens diesem durchschnittlichen "
+                                "Kurspotenzial (fairer Wert vs. aktueller Kurs).")
+    min_prob = st.slider("Mindest-Trefferquote (12M, ~20 J.)", min_value=0,
+                         max_value=100, value=0, step=5, format="%d %%",
+                         disabled=not has_prob,
                          help="Anteil der letzten ~20 Jahre, in denen ein 12-Monats-"
                               "Halten Gewinn gebracht hätte.")
     sort_options = {"Ø-Upside": "avg_upside", "Blended Upside": "blended_upside",
@@ -222,9 +227,9 @@ else:
     if sel_signals:
         view = view[view["signal"].isin(sel_signals)]
     if "avg_upside" in view.columns:
-        view = view[view["avg_upside"].fillna(-99) >= min_upside]
+        view = view[view["avg_upside"].fillna(-99) >= min_upside / 100]
     if has_prob and min_prob > 0:
-        view = view[view["win_rate_1y"].fillna(-1) >= min_prob]
+        view = view[view["win_rate_1y"].fillna(-1) >= min_prob / 100]
 if sort_col not in view.columns:
     sort_col = "avg_upside"
 view = view.sort_values(sort_col, ascending=False, na_position="last")
