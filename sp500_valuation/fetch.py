@@ -501,6 +501,9 @@ def _fetch_from_yfinance(yahoo_symbol: str, cfg: dict[str, Any]) -> dict[str, An
     # Notierungswährung (für die EUR-Umrechnung). Fehlt sie -> aus Suffix ableiten.
     ccy = (info.get("currency") or "").strip()
     row["currency_native"] = ccy or infer_currency(yahoo_symbol)
+    # Bilanzwährung (Umsatz/EBITDA/Cashflow). Weicht sie vom Kurs ab (typisch bei
+    # ADRs, z. B. Sony in JPY), sind umsatzbasierte Methoden nicht direkt gültig.
+    row["financial_currency"] = (info.get("financialCurrency") or "").strip() or None
 
     row.update(cashflow_vals)
 

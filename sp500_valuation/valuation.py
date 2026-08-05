@@ -83,6 +83,13 @@ def derive_row_fields(row: dict[str, Any]) -> dict[str, Any]:
     row["kgv_fwd"] = kgv_fwd
     row["div_yield"] = div_yield
     row["payout"] = payout
+
+    # Währungs-Mismatch: Kurs (Notierungswährung) vs. Bilanzwährung. Trifft v. a.
+    # ADRs (Kurs USD, Umsatz/EBITDA in JPY/CNY/TWD). Dann sind umsatz-/EBITDA-
+    # basierte Kennzahlen (sps, EV/EBITDA, DCF) nicht direkt vergleichbar.
+    fin = row.get("financial_currency")
+    nat = row.get("currency_native")
+    row["fx_mismatch"] = bool(fin and nat and str(fin) != str(nat))
     return row
 
 
@@ -134,13 +141,22 @@ def compute_sector_medians(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     Erwartet Spalten: sector, kgv_fwd, price, sps, bvps, shares, net_debt, ebitda.
     """
     work = df.copy()
+
+    def _mismatch(r: pd.Series) -> bool:
+        return bool(r.get("fx_mismatch")) if "fx_mismatch" in r else False
+
+    # Mismatch-Titel (Kurs- vs. Bilanzwährung) verzerren umsatz-/EBITDA-Ratios ->
+    # aus den Sektor-Medianen für P/S und EV/EBITDA heraushalten.
     work["ps"] = work.apply(
-        lambda r: (r["price"] / r["sps"]) if _pos(_num(r["sps"])) else NaN, axis=1
+        lambda r: NaN if _mismatch(r) else (
+            (r["price"] / r["sps"]) if _pos(_num(r["sps"])) else NaN), axis=1
     )
     work["pb"] = work.apply(
         lambda r: (r["price"] / r["bvps"]) if _pos(_num(r["bvps"])) else NaN, axis=1
     )
-    work["ev_ebitda"] = work.apply(_ev_ebitda_row, axis=1)
+    work["ev_ebitda"] = work.apply(
+        lambda r: NaN if _mismatch(r) else _ev_ebitda_row(r), axis=1
+    )
 
     medians: dict[str, dict[str, float]] = {}
     for sector, grp in work.groupby("sector"):
@@ -403,6 +419,14 @@ def value_row(
         ),
         "m9": m9_asset_based(bvps),
     }
+
+    # Bei Währungs-Mismatch (Kurs vs. Bilanzwährung, z. B. ADRs) sind die
+    # umsatz-/EBITDA-/Cashflow-basierten Methoden ungültig -> NaN. Die eps-/
+    # dividendenbasierten (M1-M4) und M6/M9 bleiben (in Notierungswährung).
+    if row.get("fx_mismatch"):
+        methods_map["m5"] = NaN
+        methods_map["m7"] = NaN
+        methods_map["m8"] = NaN
 
     result = dict(row)
     result["r"] = r
