@@ -42,8 +42,10 @@ sp500_valuation/
   data/cache/                # gecachte Rohdaten (json je Ticker)
   data/latest.parquet        # letztes Ergebnis (von der App geladen)
   output/latest.xlsx         # fertiges Workbook (von der App geladen)
-  .github/workflows/run.yml  # GitHub Action: Pipeline in der Cloud + Ergebnis committen
   requirements.txt
+
+.github/workflows/run.yml    # GitHub Action (im Repo-Wurzelverzeichnis, damit
+                             # GitHub sie erkennt) — Cloud-Lauf + Ergebnis committen
 ```
 
 ---
