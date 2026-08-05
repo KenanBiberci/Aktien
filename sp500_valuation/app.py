@@ -179,7 +179,10 @@ st.divider()
 # =============================================================================
 # Filter
 # =============================================================================
-with st.expander("🔎 Filter", expanded=True):
+query = st.text_input("🔍 Suche (Ticker oder Name)", value="",
+                      placeholder="z. B. SAP, Apple, Nestlé …")
+
+with st.expander("🔎 Filter", expanded=not query):
     sectors = sorted([s for s in df.get("sector", pd.Series(dtype=str)).dropna().unique()])
     sel_sectors = st.multiselect("Sektor", options=sectors, default=[])
     present = [s for s in SIGNAL_ORDER if s in set(df.get("signal", []))]
@@ -189,12 +192,23 @@ with st.expander("🔎 Filter", expanded=True):
     min_upside = st.slider("Mindest-Ø-Upside", -0.50, 1.00, 0.0, 0.05, format="%.0f%%")
 
 view = df.copy()
-if sel_sectors:
-    view = view[view["sector"].isin(sel_sectors)]
-if sel_signals:
-    view = view[view["signal"].isin(sel_signals)]
-if "avg_upside" in view.columns:
-    view = view[view["avg_upside"].fillna(-99) >= min_upside]
+# Suche hat Vorrang: greift sie, werden die Signal-/Upside-Filter gelockert,
+# damit man jede Aktie unabhängig vom aktuellen Filter findet.
+if query.strip():
+    q = query.strip().lower()
+    mask = (view["yahoo"].astype(str).str.lower().str.contains(q, na=False)
+            | view.get("security", pd.Series("", index=view.index))
+                  .astype(str).str.lower().str.contains(q, na=False))
+    view = view[mask]
+    if sel_sectors:
+        view = view[view["sector"].isin(sel_sectors)]
+else:
+    if sel_sectors:
+        view = view[view["sector"].isin(sel_sectors)]
+    if sel_signals:
+        view = view[view["signal"].isin(sel_signals)]
+    if "avg_upside" in view.columns:
+        view = view[view["avg_upside"].fillna(-99) >= min_upside]
 view = view.sort_values("avg_upside", ascending=False, na_position="last")
 
 st.caption(f"**{len(view)}** von {len(df)} Titeln")

@@ -52,8 +52,16 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 def run(limit: int | None, refresh: bool, details: list[str] | None,
         cfg: dict[str, Any]) -> pd.DataFrame:
-    # --- Schritt 1: Tickerliste ---
-    constituents = fetch.get_sp500_constituents()
+    # --- Schritt 1: Tickerliste (S&P 500 + große europäische Aktien) ---
+    sp = fetch.get_sp500_constituents()
+    try:
+        eu = fetch.get_european_constituents()
+        constituents = pd.concat([sp, eu], ignore_index=True)
+    except Exception as exc:  # noqa: BLE001 — Europa-Liste ist statisch, sollte nicht failen
+        log.warning("Europäische Liste nicht geladen (%s), nur S&P 500.", exc)
+        constituents = sp
+    constituents = constituents.drop_duplicates(subset="yahoo").reset_index(drop=True)
+    log.info("Universum gesamt: %d Titel (S&P 500 + Europa).", len(constituents))
     if limit:
         constituents = constituents.head(limit)
         log.info("Limit aktiv: nur %d Ticker.", len(constituents))
@@ -87,11 +95,11 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
               for _, row in df.iterrows()]
     result = pd.DataFrame(valued)
 
-    # --- Währungsumrechnung USD -> EUR (nur Geldbeträge, nach der Bewertung) ---
-    eurusd = fetch.get_eurusd_rate(cfg)          # USD je 1 EUR
-    result = _convert_to_eur(result, eurusd)
+    # --- Währungsumrechnung -> EUR (je Aktie nach Notierungswährung) ---
+    rates = fetch.get_fx_rates(cfg)              # Fremdwährung je 1 EUR
+    result = _convert_to_eur(result, rates)
     result["currency"] = cfg.get("currency", {}).get("target", "EUR")
-    result["fx_eurusd"] = eurusd
+    result["fx_eurusd"] = rates.get("USD")
 
     # --- Report ---
     n_total = len(result)
@@ -128,14 +136,24 @@ def _write_outputs(result: pd.DataFrame, cfg: dict[str, Any],
     log.info("Workbook geschrieben: %s und %s", dated_path, latest_path)
 
 
-def _convert_to_eur(df: pd.DataFrame, eurusd: float) -> pd.DataFrame:
-    """Rechnet die Geldbeträge-Spalten von USD nach EUR (EUR = USD / EURUSD)."""
-    if not eurusd or eurusd <= 0:
-        return df
+def _convert_to_eur(df: pd.DataFrame, rates: dict[str, float]) -> pd.DataFrame:
+    """Rechnet Geldbeträge je Aktie von ihrer Notierungswährung nach EUR um.
+
+    EUR = betrag / rate[währung]. Notierungswährung aus 'currency_native'
+    (bzw. aus dem Börsen-Suffix abgeleitet). Unbekannte Währung -> EUR (Faktor 1).
+    """
     out = df.copy()
+    if "currency_native" in out.columns:
+        curs = out.apply(
+            lambda r: r.get("currency_native") or fetch.infer_currency(str(r["yahoo"])),
+            axis=1)
+    else:
+        curs = out["yahoo"].map(lambda y: fetch.infer_currency(str(y)))
+    divisor = curs.map(lambda c: rates.get(c, 1.0) or 1.0)
     for col in MONETARY_COLS:
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce") / eurusd
+            out[col] = pd.to_numeric(out[col], errors="coerce") / divisor
+    out["currency_native"] = curs
     return out
 
 

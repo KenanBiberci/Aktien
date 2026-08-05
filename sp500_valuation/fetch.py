@@ -127,29 +127,236 @@ def _first_present(df: pd.DataFrame, candidates: list[str]) -> str:
 
 
 # =============================================================================
-# Wechselkurs USD -> EUR
+# Wechselkurse -> EUR (Multi-Währung)
 # =============================================================================
+# Börsen-Suffix -> Notierungswährung (GBp = London in Pence).
+SUFFIX_CCY = {
+    ".L": "GBp", ".SW": "CHF", ".CO": "DKK", ".ST": "SEK", ".OL": "NOK",
+    ".DE": "EUR", ".PA": "EUR", ".AS": "EUR", ".MI": "EUR", ".MC": "EUR",
+    ".BR": "EUR", ".HE": "EUR", ".LS": "EUR", ".VI": "EUR", ".IR": "EUR",
+    ".F": "EUR",
+}
+_FX_PAIRS = {"USD": "EURUSD=X", "GBP": "EURGBP=X", "CHF": "EURCHF=X",
+             "DKK": "EURDKK=X", "SEK": "EURSEK=X", "NOK": "EURNOK=X"}
+
+
+def infer_currency(yahoo_symbol: str) -> str:
+    """Notierungswährung aus dem Börsen-Suffix ableiten (US ohne Suffix -> USD)."""
+    for suf, ccy in SUFFIX_CCY.items():
+        if yahoo_symbol.endswith(suf):
+            return ccy
+    return "USD"
+
+
 def get_eurusd_rate(cfg: dict[str, Any]) -> float:
-    """USD je 1 EUR (yfinance EURUSD=X). Fehlschlag -> Fallback aus config."""
-    fallback = float(cfg.get("currency", {}).get("fallback_eurusd", 1.08))
+    """Rückwärtskompatibel: nur USD je 1 EUR."""
+    return get_fx_rates(cfg).get("USD", 1.08)
+
+
+def get_fx_rates(cfg: dict[str, Any]) -> dict[str, float]:
+    """Fremdwährung je 1 EUR für alle relevanten Währungen.
+
+    z. B. {'EUR':1, 'USD':1.08, 'GBP':0.84, 'GBp':84.0, 'CHF':0.94, ...}.
+    Umrechnung Fremdwährung->EUR: betrag_eur = betrag / rate[währung].
+    """
+    fb = cfg.get("currency", {}).get("fallback_rates", {})
+    rates: dict[str, float] = {"EUR": 1.0}
     try:
         import yfinance as yf
+    except Exception:  # noqa: BLE001
+        yf = None
 
-        tk = yf.Ticker("EURUSD=X")
+    for cur, sym in _FX_PAIRS.items():
         rate = None
-        try:
-            rate = _clean_number(tk.fast_info.get("last_price"))
-        except Exception:  # noqa: BLE001
-            rate = None
-        if rate is None:
-            rate = _clean_number((tk.info or {}).get("regularMarketPrice"))
-        if rate is not None and 0.5 < rate < 2.0:
-            log.info("EUR/USD-Kurs: %.4f (1 EUR = %.4f USD).", rate, rate)
-            return float(rate)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("EUR/USD-Abruf fehlgeschlagen: %s", exc)
-    log.warning("EUR/USD-Live-Kurs nicht verfügbar, nutze Fallback %.4f.", fallback)
-    return fallback
+        if yf is not None:
+            try:
+                rate = _clean_number(yf.Ticker(sym).fast_info.get("last_price"))
+            except Exception:  # noqa: BLE001
+                rate = None
+            if rate is None:
+                try:
+                    rate = _clean_number((yf.Ticker(sym).info or {}).get("regularMarketPrice"))
+                except Exception:  # noqa: BLE001
+                    rate = None
+        if not rate or rate <= 0:
+            rate = float(fb.get(cur, 1.0))
+            log.warning("FX %s nicht live verfügbar, Fallback %.4f.", cur, rate)
+        rates[cur] = float(rate)
+
+    rates["GBp"] = rates["GBP"] * 100.0     # London notiert in Pence
+    log.info("Wechselkurse (je 1 EUR): USD=%.4f GBP=%.4f CHF=%.4f",
+             rates["USD"], rates["GBP"], rates["CHF"])
+    return rates
+
+
+# =============================================================================
+# Große europäische Aktien (kuratierte Liste, Yahoo-Ticker + GICS-Sektor)
+# =============================================================================
+def get_european_constituents() -> pd.DataFrame:
+    """Kuratierte Liste großer europäischer Aktien (Yahoo-Ticker bereits korrekt)."""
+    df = pd.DataFrame(EUROPEAN_STOCKS, columns=["yahoo", "security", "sector"])
+    df["symbol"] = df["yahoo"]
+    df = df.drop_duplicates(subset="yahoo").reset_index(drop=True)
+    log.info("Europäische Liste: %d Titel.", len(df))
+    return df[["symbol", "security", "sector", "yahoo"]]
+
+
+# (yahoo, Name, GICS-Sektor) — große Werte quer durch Europa
+EUROPEAN_STOCKS: list[tuple[str, str, str]] = [
+    # Deutschland (.DE)
+    ("SAP.DE", "SAP", "Information Technology"),
+    ("SIE.DE", "Siemens", "Industrials"),
+    ("ALV.DE", "Allianz", "Financials"),
+    ("DTE.DE", "Deutsche Telekom", "Communication Services"),
+    ("MBG.DE", "Mercedes-Benz Group", "Consumer Discretionary"),
+    ("BMW.DE", "BMW", "Consumer Discretionary"),
+    ("VOW3.DE", "Volkswagen", "Consumer Discretionary"),
+    ("BAS.DE", "BASF", "Materials"),
+    ("BAYN.DE", "Bayer", "Health Care"),
+    ("ADS.DE", "Adidas", "Consumer Discretionary"),
+    ("DBK.DE", "Deutsche Bank", "Financials"),
+    ("MUV2.DE", "Munich Re", "Financials"),
+    ("IFX.DE", "Infineon", "Information Technology"),
+    ("DHL.DE", "DHL Group", "Industrials"),
+    ("MRK.DE", "Merck KGaA", "Health Care"),
+    ("SHL.DE", "Siemens Healthineers", "Health Care"),
+    ("ENR.DE", "Siemens Energy", "Industrials"),
+    ("EOAN.DE", "E.ON", "Utilities"),
+    ("RWE.DE", "RWE", "Utilities"),
+    ("HEN3.DE", "Henkel", "Consumer Staples"),
+    ("BEI.DE", "Beiersdorf", "Consumer Staples"),
+    ("VNA.DE", "Vonovia", "Real Estate"),
+    ("P911.DE", "Porsche AG", "Consumer Discretionary"),
+    ("DTG.DE", "Daimler Truck", "Industrials"),
+    # Frankreich (.PA)
+    ("MC.PA", "LVMH", "Consumer Discretionary"),
+    ("OR.PA", "L'Oréal", "Consumer Staples"),
+    ("RMS.PA", "Hermès", "Consumer Discretionary"),
+    ("TTE.PA", "TotalEnergies", "Energy"),
+    ("SAN.PA", "Sanofi", "Health Care"),
+    ("AIR.PA", "Airbus", "Industrials"),
+    ("SU.PA", "Schneider Electric", "Industrials"),
+    ("AI.PA", "Air Liquide", "Materials"),
+    ("EL.PA", "EssilorLuxottica", "Health Care"),
+    ("BNP.PA", "BNP Paribas", "Financials"),
+    ("KER.PA", "Kering", "Consumer Discretionary"),
+    ("BN.PA", "Danone", "Consumer Staples"),
+    ("CS.PA", "AXA", "Financials"),
+    ("DG.PA", "Vinci", "Industrials"),
+    ("SAF.PA", "Safran", "Industrials"),
+    ("RI.PA", "Pernod Ricard", "Consumer Staples"),
+    ("CAP.PA", "Capgemini", "Information Technology"),
+    ("SGO.PA", "Saint-Gobain", "Industrials"),
+    ("DSY.PA", "Dassault Systèmes", "Information Technology"),
+    ("ORA.PA", "Orange", "Communication Services"),
+    ("ENGI.PA", "Engie", "Utilities"),
+    ("LR.PA", "Legrand", "Industrials"),
+    ("EN.PA", "Bouygues", "Industrials"),
+    # Niederlande (.AS)
+    ("ASML.AS", "ASML", "Information Technology"),
+    ("PRX.AS", "Prosus", "Consumer Discretionary"),
+    ("ADYEN.AS", "Adyen", "Financials"),
+    ("HEIA.AS", "Heineken", "Consumer Staples"),
+    ("WKL.AS", "Wolters Kluwer", "Industrials"),
+    ("INGA.AS", "ING Group", "Financials"),
+    ("AD.AS", "Ahold Delhaize", "Consumer Staples"),
+    ("PHIA.AS", "Philips", "Health Care"),
+    ("ASM.AS", "ASM International", "Information Technology"),
+    ("FER.AS", "Ferrovial", "Industrials"),
+    # Schweiz (.SW)
+    ("NESN.SW", "Nestlé", "Consumer Staples"),
+    ("ROG.SW", "Roche", "Health Care"),
+    ("NOVN.SW", "Novartis", "Health Care"),
+    ("UBSG.SW", "UBS Group", "Financials"),
+    ("ZURN.SW", "Zurich Insurance", "Financials"),
+    ("ABBN.SW", "ABB", "Industrials"),
+    ("CFR.SW", "Richemont", "Consumer Discretionary"),
+    ("SIKA.SW", "Sika", "Materials"),
+    ("GIVN.SW", "Givaudan", "Materials"),
+    ("HOLN.SW", "Holcim", "Materials"),
+    ("LONN.SW", "Lonza", "Health Care"),
+    ("ALC.SW", "Alcon", "Health Care"),
+    ("SREN.SW", "Swiss Re", "Financials"),
+    # UK (.L) — notiert in Pence (GBp)
+    ("AZN.L", "AstraZeneca", "Health Care"),
+    ("SHEL.L", "Shell", "Energy"),
+    ("HSBA.L", "HSBC", "Financials"),
+    ("ULVR.L", "Unilever", "Consumer Staples"),
+    ("BP.L", "BP", "Energy"),
+    ("GSK.L", "GSK", "Health Care"),
+    ("DGE.L", "Diageo", "Consumer Staples"),
+    ("RIO.L", "Rio Tinto", "Materials"),
+    ("BATS.L", "British American Tobacco", "Consumer Staples"),
+    ("GLEN.L", "Glencore", "Materials"),
+    ("REL.L", "RELX", "Industrials"),
+    ("LSEG.L", "London Stock Exchange", "Financials"),
+    ("NG.L", "National Grid", "Utilities"),
+    ("RR.L", "Rolls-Royce", "Industrials"),
+    ("BA.L", "BAE Systems", "Industrials"),
+    ("BARC.L", "Barclays", "Financials"),
+    ("LLOY.L", "Lloyds Banking Group", "Financials"),
+    ("TSCO.L", "Tesco", "Consumer Staples"),
+    ("VOD.L", "Vodafone", "Communication Services"),
+    ("RKT.L", "Reckitt Benckiser", "Consumer Staples"),
+    ("PRU.L", "Prudential", "Financials"),
+    ("CPG.L", "Compass Group", "Consumer Discretionary"),
+    # Spanien (.MC)
+    ("ITX.MC", "Inditex", "Consumer Discretionary"),
+    ("IBE.MC", "Iberdrola", "Utilities"),
+    ("SAN.MC", "Banco Santander", "Financials"),
+    ("BBVA.MC", "BBVA", "Financials"),
+    ("CABK.MC", "CaixaBank", "Financials"),
+    ("TEF.MC", "Telefónica", "Communication Services"),
+    ("AMS.MC", "Amadeus IT", "Information Technology"),
+    # Italien (.MI)
+    ("RACE.MI", "Ferrari", "Consumer Discretionary"),
+    ("ENEL.MI", "Enel", "Utilities"),
+    ("ISP.MI", "Intesa Sanpaolo", "Financials"),
+    ("UCG.MI", "UniCredit", "Financials"),
+    ("ENI.MI", "Eni", "Energy"),
+    ("G.MI", "Generali", "Financials"),
+    ("STLAM.MI", "Stellantis", "Consumer Discretionary"),
+    ("PRY.MI", "Prysmian", "Industrials"),
+    ("MONC.MI", "Moncler", "Consumer Discretionary"),
+    # Dänemark (.CO)
+    ("NOVO-B.CO", "Novo Nordisk", "Health Care"),
+    ("DSV.CO", "DSV", "Industrials"),
+    ("MAERSK-B.CO", "A.P. Møller-Mærsk", "Industrials"),
+    ("CARL-B.CO", "Carlsberg", "Consumer Staples"),
+    ("ORSTED.CO", "Ørsted", "Utilities"),
+    ("VWS.CO", "Vestas Wind Systems", "Industrials"),
+    ("COLO-B.CO", "Coloplast", "Health Care"),
+    ("GMAB.CO", "Genmab", "Health Care"),
+    # Schweden (.ST)
+    ("ATCO-A.ST", "Atlas Copco", "Industrials"),
+    ("INVE-B.ST", "Investor AB", "Financials"),
+    ("VOLV-B.ST", "Volvo", "Industrials"),
+    ("EQT.ST", "EQT", "Financials"),
+    ("ERIC-B.ST", "Ericsson", "Information Technology"),
+    ("SAND.ST", "Sandvik", "Industrials"),
+    ("HEXA-B.ST", "Hexagon", "Information Technology"),
+    ("ASSA-B.ST", "Assa Abloy", "Industrials"),
+    ("HM-B.ST", "H&M", "Consumer Discretionary"),
+    # Norwegen (.OL)
+    ("EQNR.OL", "Equinor", "Energy"),
+    ("DNB.OL", "DNB Bank", "Financials"),
+    ("TEL.OL", "Telenor", "Communication Services"),
+    # Finnland (.HE)
+    ("NOKIA.HE", "Nokia", "Information Technology"),
+    ("KNEBV.HE", "Kone", "Industrials"),
+    ("NESTE.HE", "Neste", "Energy"),
+    ("SAMPO.HE", "Sampo", "Financials"),
+    # Belgien (.BR)
+    ("ABI.BR", "Anheuser-Busch InBev", "Consumer Staples"),
+    ("KBC.BR", "KBC Group", "Financials"),
+    ("UCB.BR", "UCB", "Health Care"),
+    # Portugal (.LS) / Österreich (.VI)
+    ("EDP.LS", "EDP", "Utilities"),
+    ("GALP.LS", "Galp Energia", "Energy"),
+    ("OMV.VI", "OMV", "Energy"),
+    ("EBS.VI", "Erste Group Bank", "Financials"),
+    ("VER.VI", "Verbund", "Utilities"),
+]
 
 
 # =============================================================================
@@ -235,6 +442,10 @@ def _fetch_from_yfinance(yahoo_symbol: str, cfg: dict[str, Any]) -> dict[str, An
     # price-Fallback über fast_info.last_price
     if row.get("price") is None:
         row["price"] = _clean_number(fast.get("last_price"))
+
+    # Notierungswährung (für die EUR-Umrechnung). Fehlt sie -> aus Suffix ableiten.
+    ccy = (info.get("currency") or "").strip()
+    row["currency_native"] = ccy or infer_currency(yahoo_symbol)
 
     row.update(cashflow_vals)
 
