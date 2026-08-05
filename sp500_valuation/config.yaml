@@ -41,6 +41,11 @@ currency:
     SEK: 11.30
     NOK: 11.70
 
+# --- Backtest ----------------------------------------------------------------
+# Historische 12-Monats-Renditen (jahresweise) über so viele Jahre zurück.
+backtest:
+  years: 20
+
 # --- Datenabruf --------------------------------------------------------------
 fetch:
   sleep_between_calls: 0.4  # Sekunden zwischen yfinance-Calls (Rate-Limit)

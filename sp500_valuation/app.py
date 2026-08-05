@@ -13,9 +13,11 @@ Geldbeträge sind bereits in EUR (Umrechnung erfolgt in der Pipeline).
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
@@ -182,7 +184,9 @@ st.divider()
 query = st.text_input("🔍 Suche (Ticker oder Name)", value="",
                       placeholder="z. B. SAP, Apple, Nestlé …")
 
-with st.expander("🔎 Filter", expanded=not query):
+has_prob = "win_rate_1y" in df.columns and df["win_rate_1y"].notna().any()
+
+with st.expander("🔎 Filter & Sortierung", expanded=not query):
     sectors = sorted([s for s in df.get("sector", pd.Series(dtype=str)).dropna().unique()])
     sel_sectors = st.multiselect("Sektor", options=sectors, default=[])
     present = [s for s in SIGNAL_ORDER if s in set(df.get("signal", []))]
@@ -190,6 +194,16 @@ with st.expander("🔎 Filter", expanded=not query):
         "Signal", options=present,
         default=[s for s in ("STRONG BUY", "BUY") if s in present])
     min_upside = st.slider("Mindest-Ø-Upside", -0.50, 1.00, 0.0, 0.05, format="%.0f%%")
+    min_prob = st.slider("Mindest-Trefferquote (12M, ~20 J.)", 0.0, 1.0, 0.0, 0.05,
+                         format="%.0f%%", disabled=not has_prob,
+                         help="Anteil der letzten ~20 Jahre, in denen ein 12-Monats-"
+                              "Halten Gewinn gebracht hätte.")
+    sort_options = {"Ø-Upside": "avg_upside", "Blended Upside": "blended_upside",
+                    "Kurs": "price"}
+    if has_prob:
+        sort_options = {"Trefferquote (Wahrscheinlichkeit)": "win_rate_1y", **sort_options}
+    sort_label = st.selectbox("Sortieren nach", list(sort_options.keys()))
+    sort_col = sort_options[sort_label]
 
 view = df.copy()
 # Suche hat Vorrang: greift sie, werden die Signal-/Upside-Filter gelockert,
@@ -209,20 +223,25 @@ else:
         view = view[view["signal"].isin(sel_signals)]
     if "avg_upside" in view.columns:
         view = view[view["avg_upside"].fillna(-99) >= min_upside]
-view = view.sort_values("avg_upside", ascending=False, na_position="last")
+    if has_prob and min_prob > 0:
+        view = view[view["win_rate_1y"].fillna(-1) >= min_prob]
+if sort_col not in view.columns:
+    sort_col = "avg_upside"
+view = view.sort_values(sort_col, ascending=False, na_position="last")
 
 st.caption(f"**{len(view)}** von {len(df)} Titeln")
 
 # =============================================================================
 # Tabs
 # =============================================================================
-tab_screener, tab_detail, tab_pdf = st.tabs(["📊 Screener", "🔍 Detail", "📄 PDF-Report"])
+tab_screener, tab_detail, tab_backtest, tab_pdf = st.tabs(
+    ["📊 Screener", "🔍 Detail", "📉 Backtest", "📄 PDF-Report"])
 
 # --- Screener ----------------------------------------------------------------
 with tab_screener:
     core = {
         "yahoo": "Ticker", "security": "Name", "price": "Kurs",
-        "kgv_fwd": "KGV fwd", "avg_upside": "Ø-Upside",
+        "kgv_fwd": "KGV fwd", "avg_upside": "Ø-Upside", "win_rate_1y": "Trefferquote",
         "signal": "Signal", "rec_key": "Konsens",
     }
     avail = {k: v for k, v in core.items() if k in view.columns}
@@ -239,6 +258,8 @@ with tab_screener:
         fmt["KGV fwd"] = "{:,.1f}x"
     if "Ø-Upside" in table:
         fmt["Ø-Upside"] = "{:+.1%}"
+    if "Trefferquote" in table:
+        fmt["Trefferquote"] = "{:.0%}"
     styled = table.style.format(fmt, na_rep="—")
     if "Signal" in table:
         styled = styled.map(_color_sig, subset=["Signal"])
@@ -289,6 +310,65 @@ with tab_detail:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("Keine Titel im aktuellen Filter.")
+
+# --- Backtest ----------------------------------------------------------------
+with tab_backtest:
+    st.markdown("**Backtest — 12-Monats-Halten, jahresweise über ~20 Jahre**")
+    st.caption("Wenn man Anfang eines Jahres gekauft und **12 Monate gehalten** hätte — "
+               "wie wäre es ausgegangen? Grün = Gewinn, Rot = Verlust.")
+    if "annual_returns_json" not in df.columns:
+        st.info("Backtest-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
+    else:
+        bt_opts = view["yahoo"].tolist() if len(view) else df["yahoo"].tolist()
+        names_bt = dict(zip(df["yahoo"], df.get("security", df["yahoo"])))
+        sel_bt = st.selectbox("Aktie für den Backtest", options=bt_opts,
+                              format_func=lambda t: signal_label(t, str(names_bt.get(t, ""))),
+                              key="bt_select")
+        brow = df[df["yahoo"] == sel_bt].iloc[0]
+        raw = brow.get("annual_returns_json")
+        if not raw or (isinstance(raw, float) and pd.isna(raw)):
+            st.info("Für diesen Titel liegen keine ausreichenden Kurshistorien vor.")
+        else:
+            data = json.loads(raw)
+            years, rets = data.get("years", []), data.get("returns", [])
+            if not rets:
+                st.info("Keine Backtest-Daten für diesen Titel.")
+            else:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Trefferquote", _pct(brow.get("win_rate_1y")),
+                          help="Anteil der Jahre mit positivem 12-Monats-Ergebnis.")
+                c2.metric("Ø 12M-Rendite", _pct(brow.get("avg_return_1y")))
+                c3.metric("Jahre getestet", str(len(rets)))
+
+                cdf = pd.DataFrame({
+                    "Zeitraum": [f"{y}→{y + 1}" for y in years],
+                    "Rendite": rets,
+                    "Ergebnis": ["Gewinn" if r >= 0 else "Verlust" for r in rets],
+                })
+                chart = (
+                    alt.Chart(cdf).mark_bar().encode(
+                        x=alt.X("Zeitraum:N", sort=None, title=None,
+                                axis=alt.Axis(labelAngle=-55)),
+                        y=alt.Y("Rendite:Q", axis=alt.Axis(format="%"), title="12M-Rendite"),
+                        color=alt.Color("Ergebnis:N",
+                                        scale=alt.Scale(domain=["Gewinn", "Verlust"],
+                                                        range=["#2da44e", "#cf222e"]),
+                                        legend=None),
+                        tooltip=[alt.Tooltip("Zeitraum:N"),
+                                 alt.Tooltip("Rendite:Q", format="+.1%")],
+                    ).properties(height=320)
+                )
+                st.altair_chart(chart, use_container_width=True)
+
+                best_i = int(pd.Series(rets).idxmax())
+                worst_i = int(pd.Series(rets).idxmin())
+                st.caption(
+                    f"Bestes Jahr: **{years[best_i]}→{years[best_i] + 1}** "
+                    f"({rets[best_i] * 100:+.1f} %) · "
+                    f"schlechtestes: **{years[worst_i]}→{years[worst_i] + 1}** "
+                    f"({rets[worst_i] * 100:+.1f} %). "
+                    "Vergangene Wertentwicklung ist keine Garantie für die Zukunft."
+                )
 
 # --- PDF-Report --------------------------------------------------------------
 with tab_pdf:

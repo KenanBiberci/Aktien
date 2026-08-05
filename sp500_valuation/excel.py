@@ -71,6 +71,7 @@ SCREENER_COLS: list[tuple[str, str, str | None]] = [
     ("Blended Upside", "blended_upside", FMT_PCT),
     ("Konsens-Upside", "consensus_upside", FMT_PCT),
     ("Ø-Upside", "avg_upside", FMT_PCT),
+    ("Trefferquote 12M", "win_rate_1y", FMT_PCT),
     ("BUY-SIGNAL", "signal", None),
     ("Analysten-Konsens", "rec_key", None),
     ("PVGO %", "pvgo_pct", FMT_PCT),

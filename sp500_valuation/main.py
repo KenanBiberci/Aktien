@@ -17,6 +17,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 
+import backtest
 import fetch
 import valuation
 import excel
@@ -52,16 +54,17 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 def run(limit: int | None, refresh: bool, details: list[str] | None,
         cfg: dict[str, Any]) -> pd.DataFrame:
-    # --- Schritt 1: Tickerliste (S&P 500 + große europäische Aktien) ---
+    # --- Schritt 1: Tickerliste (S&P 500 + Europa + weitere große Titel) ---
     sp = fetch.get_sp500_constituents()
-    try:
-        eu = fetch.get_european_constituents()
-        constituents = pd.concat([sp, eu], ignore_index=True)
-    except Exception as exc:  # noqa: BLE001 — Europa-Liste ist statisch, sollte nicht failen
-        log.warning("Europäische Liste nicht geladen (%s), nur S&P 500.", exc)
-        constituents = sp
+    parts = [sp]
+    for loader in (fetch.get_european_constituents, fetch.get_additional_constituents):
+        try:
+            parts.append(loader())
+        except Exception as exc:  # noqa: BLE001 — statische Listen, sollten nicht failen
+            log.warning("Zusatzliste %s nicht geladen: %s", loader.__name__, exc)
+    constituents = pd.concat(parts, ignore_index=True)
     constituents = constituents.drop_duplicates(subset="yahoo").reset_index(drop=True)
-    log.info("Universum gesamt: %d Titel (S&P 500 + Europa).", len(constituents))
+    log.info("Universum gesamt: %d Titel (S&P 500 + Europa + weitere).", len(constituents))
     if limit:
         constituents = constituents.head(limit)
         log.info("Limit aktiv: nur %d Ticker.", len(constituents))
@@ -100,6 +103,10 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
     result = _convert_to_eur(result, rates)
     result["currency"] = cfg.get("currency", {}).get("target", "EUR")
     result["fx_eurusd"] = rates.get("USD")
+
+    # --- Backtest: historische 12-Monats-Renditen je Aktie (Trefferquote) ---
+    bt_years = int(cfg.get("backtest", {}).get("years", 20))
+    result = _attach_backtests(result, bt_years)
 
     # --- Report ---
     n_total = len(result)
@@ -154,6 +161,24 @@ def _convert_to_eur(df: pd.DataFrame, rates: dict[str, float]) -> pd.DataFrame:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce") / divisor
     out["currency_native"] = curs
+    return out
+
+
+def _attach_backtests(df: pd.DataFrame, years: int) -> pd.DataFrame:
+    """Ergänzt win_rate_1y, avg_return_1y und annual_returns_json je Aktie."""
+    out = df.copy()
+    try:
+        bt = backtest.compute_annual_backtests(out["yahoo"].astype(str).tolist(),
+                                               years=years)
+    except Exception as exc:  # noqa: BLE001 — Backtest darf den Lauf nie abbrechen
+        log.warning("Backtest fehlgeschlagen (%s), überspringe.", exc)
+        bt = {}
+    out["win_rate_1y"] = out["yahoo"].map(lambda t: bt.get(str(t), {}).get("win_rate"))
+    out["avg_return_1y"] = out["yahoo"].map(lambda t: bt.get(str(t), {}).get("avg_return"))
+    out["annual_returns_json"] = out["yahoo"].map(
+        lambda t: json.dumps(bt[str(t)]) if str(t) in bt else None)
+    n = int(out["win_rate_1y"].notna().sum())
+    log.info("Backtest-Trefferquote für %d/%d Titel berechnet.", n, len(out))
     return out
 
 
