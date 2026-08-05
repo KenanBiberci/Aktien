@@ -1,9 +1,11 @@
 # S&P-500 Valuation-Pipeline
 
-Zieht für **alle S&P-500-Aktien** automatisch Fundamentaldaten (yfinance), rechnet sie durch
-ein festes Bewertungsmodell (9 Methoden, Equity-Investments-Werkzeugkasten) und gibt das
-Ergebnis als **Excel** mit **Buy/Hold/Sell-Signal** aus. Alle Geldbeträge werden nach **EUR**
-umgerechnet. Alles mit **einem Befehl**, wiederholbar, und vom **iPhone** aus abrufbar.
+Zieht für **alle S&P-500-Aktien plus die großen europäischen Aktien** automatisch
+Fundamentaldaten (yfinance), rechnet sie durch ein festes Bewertungsmodell (9 Methoden,
+Equity-Investments-Werkzeugkasten) und gibt das Ergebnis als **Excel** mit
+**Buy/Hold/Sell-Signal** aus. Alle Geldbeträge werden **währungsrichtig nach EUR** umgerechnet
+(USD, GBP/Pence, CHF, SEK/DKK/NOK). Alles mit **einem Befehl**, wiederholbar, und vom
+**iPhone** aus abrufbar.
 
 > ⚠️ **Keine Anlageberatung.** Lern-/Analyse-Tool. Signale sind regelbasiert und nur so gut
 > wie die kostenlosen Daten und die gewählten Annahmen. Eigene Prüfung und Risikostreuung nötig.
@@ -125,6 +127,7 @@ selbst rechnet. Die schwere Berechnung läuft in der **Cloud** (GitHub Actions),
 zeigt nur die fertige Tabelle über die **Streamlit-App**.
 
 **App-Funktionen** (mobil optimiert, Tabs):
+- **Suche** nach Ticker oder Firmenname (z. B. „SAP", „Nestlé", „Apple").
 - **Übersicht** mit Signal-Kacheln (Anzahl STRONG BUY / BUY / HOLD / REDUCE).
 - **Screener** — Tabelle mit Ticker **und Firmennamen**, Kursen in **EUR**, farbigen Signalen; Excel-Download.
 - **Detail** — je Aktie alle 9 Methoden + PVGO + Kennzahlen.
