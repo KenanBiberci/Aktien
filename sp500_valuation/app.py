@@ -21,10 +21,12 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+import yaml
 
 import pdf_report
 
 BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.yaml"
 PARQUET_PATH = BASE_DIR / "data" / "latest.parquet"
 CSV_FALLBACK = BASE_DIR / "data" / "latest.csv"
 XLSX_PATH = BASE_DIR / "output" / "latest.xlsx"
@@ -172,6 +174,92 @@ def fx_rate(df: pd.DataFrame) -> float | None:
     return None
 
 
+@st.cache_data(ttl=600)
+def load_config() -> dict:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _resignal(avg_upside, n_methods, divergence, confidence, cfg) -> str:
+    """Signal aus Ø-Upside neu ableiten (gleiche Logik/Gate wie in valuation.py)."""
+    th = cfg.get("signal_thresholds", {})
+    sb, bu, hf = (float(th.get("strong_buy", 0.30)), float(th.get("buy", 0.10)),
+                  float(th.get("hold_floor", -0.10)))
+    block = float(cfg.get("confidence", {}).get("block_strong_buy_above", 0.60))
+    if not _is_num(avg_upside):
+        return "N/A – Datenlücke"
+    n = int(n_methods) if _is_num(n_methods) else 0
+    if avg_upside >= sb and n >= 3:
+        sig = "STRONG BUY"
+    elif avg_upside >= bu:
+        sig = "BUY"
+    elif avg_upside >= hf:
+        sig = "HOLD"
+    else:
+        sig = "REDUCE"
+    if sig == "STRONG BUY" and _is_num(divergence) and float(divergence) > block:
+        sig = "BUY"
+    if str(confidence) == "Niedrig" and sig != "N/A – Datenlücke":
+        if sig == "STRONG BUY":
+            sig = "BUY"
+        sig = f"{sig} (niedrige Konfidenz)"
+    return sig
+
+
+def refresh_prices_live(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Holt aktuelle Kurse (yfinance, gebündelt), rechnet nach EUR um und
+    aktualisiert Kurs + Upsides + Signal. Fundamentaldaten/faire Werte bleiben
+    vom letzten Cloud-Lauf. Rückgabe: (aktualisiertes df, Anzahl aktualisiert)."""
+    import yfinance as yf
+
+    import backtest
+    import fetch
+
+    cfg = load_config()
+    tickers = df["yahoo"].astype(str).tolist()
+    rates = fetch.get_fx_rates(cfg)
+    data = yf.download(tickers, period="2d", interval="1d", progress=False,
+                       group_by="ticker", threads=True)
+
+    out = df.copy()
+    updated = 0
+    for i in out.index:
+        t = str(out.at[i, "yahoo"])
+        series = backtest._close_series(data, t)
+        if series is None:
+            continue
+        series = series.dropna()
+        if series.empty:
+            continue
+        p_nat = float(series.iloc[-1])
+        ccy = str(out.at[i, "currency_native"]) if "currency_native" in out.columns else "USD"
+        divisor = rates.get(ccy, 1.0) or 1.0
+        p_eur = p_nat / divisor
+        if not (p_eur > 0):
+            continue
+        out.at[i, "price"] = p_eur
+        bfv = out.at[i, "blended_fair_value"] if "blended_fair_value" in out.columns else float("nan")
+        tgt = out.at[i, "target"] if "target" in out.columns else float("nan")
+        b_up = (float(bfv) / p_eur - 1) if _is_num(bfv) else float("nan")
+        c_up = (float(tgt) / p_eur - 1) if _is_num(tgt) else float("nan")
+        ups = [u for u in (b_up, c_up) if _is_num(u)]
+        a_up = sum(ups) / len(ups) if ups else float("nan")
+        out.at[i, "blended_upside"] = b_up
+        out.at[i, "consensus_upside"] = c_up
+        out.at[i, "avg_upside"] = a_up
+        if "signal" in out.columns:
+            out.at[i, "signal"] = _resignal(
+                a_up, out.at[i, "n_methods"] if "n_methods" in out.columns else 0,
+                out.at[i, "divergence"] if "divergence" in out.columns else float("nan"),
+                out.at[i, "confidence"] if "confidence" in out.columns else "",
+                cfg)
+        updated += 1
+    return out, updated
+
+
 # =============================================================================
 # Laden
 # =============================================================================
@@ -185,13 +273,34 @@ if df is None:
              "oder lokal `python main.py`, damit data/latest.parquet entsteht.")
     st.stop()
 
+# Falls die Kurse zuvor live aktualisiert wurden: diese Version verwenden.
+if "live_df" in st.session_state:
+    df = st.session_state["live_df"]
+
 label, _ = last_run()
-col_a, col_b = st.columns([2, 1])
+col_a, col_b, col_c = st.columns([2, 1, 1])
 with col_a:
-    st.metric("Letzter Lauf", label)
+    stamp = st.session_state.get("live_stamp")
+    st.metric("Letzter Lauf", label,
+              delta=(f"Kurse live: {stamp}" if stamp else None), delta_color="off")
 with col_b:
     st.write("")
-    if st.button("🔄 Neu berechnen"):
+    if st.button("💹 Kurse aktualisieren", use_container_width=True,
+                 help="Holt die aktuellen Börsenkurse live und rechnet Upside & Signal "
+                      "sofort neu (faire Werte bleiben vom letzten Lauf)."):
+        with st.spinner("Hole aktuelle Kurse …"):
+            try:
+                updated_df, n_upd = refresh_prices_live(load_data())
+                st.session_state["live_df"] = updated_df
+                st.session_state["live_stamp"] = datetime.now().strftime("%H:%M")
+                st.success(f"{n_upd} Kurse aktualisiert.")
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Kurse konnten nicht geladen werden: {str(exc)[:150]}")
+with col_c:
+    st.write("")
+    if st.button("🔄 Neu berechnen", use_container_width=True,
+                 help="Kompletter Neulauf in der Cloud (alle Daten, ~2–3 Min)."):
         trigger_workflow()
 
 # --- Übersichts-Kacheln je Signal --------------------------------------------
