@@ -350,6 +350,19 @@ for c, sig in zip(kpi_cols, ["STRONG BUY", "BUY", "HOLD", "REDUCE"]):
             unsafe_allow_html=True,
         )
 
+with st.expander("❓ Was heißt das alles? (in einfachen Worten)"):
+    st.markdown(
+        "- **Signal** = die Ampel des Modells: **STRONG BUY / BUY** = laut Modell "
+        "günstig, **HOLD** = fair bewertet, **REDUCE** = eher teuer.\n"
+        "- **Kurspotenzial** = wie viel die Aktie theoretisch steigen könnte, bis sie "
+        "„fair\" bewertet ist. Beispiel: Kostet sie 100 € und wäre laut Modell 130 € "
+        "wert, sind das **+30 %**. Minus = das Modell hält sie für zu teuer.\n"
+        "- **Trefferquote** = in wie vielen der letzten ~20 Jahre man mit „1 Jahr "
+        "halten\" Gewinn gemacht hätte. Nur Vergangenheit, keine Garantie.\n"
+        "- **Konfidenz** = wie sicher sich das Modell ist (stimmen die Rechenwege "
+        "überein?): **Hoch** = verlässlicher, **Niedrig** = mit Vorsicht genießen.\n\n"
+        "⚠️ Alles sind regelbasierte Schätzungen — **keine Anlageberatung.**")
+
 st.divider()
 
 # =============================================================================
@@ -368,23 +381,24 @@ with st.expander("🔎 Filter & Sortierung", expanded=not query):
         "Signal", options=present,
         default=[s for s in ("STRONG BUY", "BUY") if s in present])
     # Regler in ganzen Prozent (−50 % … +200 % bzw. 0 % … 100 %); intern /100.
-    min_upside = st.slider("Mindest-Ø-Upside", min_value=-50, max_value=200,
-                           value=0, step=5, format="%d %%",
-                           help="Nur Aktien mit mindestens diesem durchschnittlichen "
-                                "Kurspotenzial (fairer Wert vs. aktueller Kurs).")
-    min_prob = st.slider("Mindest-Trefferquote (12M, ~20 J.)", min_value=0,
-                         max_value=100, value=0, step=5, format="%d %%",
+    min_upside = st.slider("Mindestens erwartetes Kurs-Plus", min_value=-50,
+                           max_value=200, value=0, step=5, format="%d %%",
+                           help="Zeigt nur Aktien, die laut Modell mindestens so viel "
+                                "steigen könnten. 0 % = mindestens fair bewertet; "
+                                "+30 % = mindestens 30 % Luft nach oben.")
+    min_prob = st.slider("Mindestens so oft in der Vergangenheit im Plus",
+                         min_value=0, max_value=100, value=0, step=5, format="%d %%",
                          disabled=not has_prob,
-                         help="Anteil der letzten ~20 Jahre, in denen ein 12-Monats-"
-                              "Halten Gewinn gebracht hätte.")
+                         help="Trefferquote: in wie vielen der letzten ~20 Jahre ein "
+                              "12-Monats-Halten Gewinn gebracht hätte.")
     has_conf = "confidence" in df.columns
     only_high_conf = st.checkbox("Nur hohe Konfidenz", value=False, disabled=not has_conf,
                                  help="Nur Titel, bei denen die Methoden gut übereinstimmen "
                                       "(geringe Divergenz, genug Methoden).")
-    sort_options = {"Ø-Upside": "avg_upside", "Blended Upside": "blended_upside",
+    sort_options = {"Kurspotenzial": "avg_upside", "Kurspotenzial (nur Modell)": "blended_upside",
                     "Kurs": "price"}
     if has_prob:
-        sort_options = {"Trefferquote (Wahrscheinlichkeit)": "win_rate_1y", **sort_options}
+        sort_options = {"Trefferquote": "win_rate_1y", **sort_options}
     sort_label = st.selectbox("Sortieren nach", list(sort_options.keys()))
     sort_col = sort_options[sort_label]
 
@@ -435,7 +449,7 @@ tab_screener, tab_detail, tab_backtest, tab_pdf = st.tabs(
 with tab_screener:
     core = {
         "yahoo": "Ticker", "security": "Name", "price": "Kurs",
-        "kgv_fwd": "KGV fwd", "avg_upside": "Ø-Upside", "win_rate_1y": "Trefferquote",
+        "kgv_fwd": "KGV fwd", "avg_upside": "Kurspotenzial", "win_rate_1y": "Trefferquote",
         "signal": "Signal", "confidence": "Konfidenz", "rec_key": "Konsens",
     }
     avail = {k: v for k, v in core.items() if k in view.columns}
@@ -450,8 +464,8 @@ with tab_screener:
         fmt["Kurs"] = "{:,.2f} €"
     if "KGV fwd" in table:
         fmt["KGV fwd"] = "{:,.1f}x"
-    if "Ø-Upside" in table:
-        fmt["Ø-Upside"] = "{:+.1%}"
+    if "Kurspotenzial" in table:
+        fmt["Kurspotenzial"] = "{:+.1%}"
     if "Trefferquote" in table:
         fmt["Trefferquote"] = "{:.0%}"
     conf_bg = {"Hoch": "#d7f7df", "Mittel": "#ffeb9c", "Niedrig": "#ffc7ce"}
@@ -493,7 +507,7 @@ with tab_detail:
         m1, m2, m3 = st.columns(3)
         m1.metric("Kurs", _eur(row.get("price")))
         m2.metric("Blended Fair Value", _eur(row.get("blended_fair_value")))
-        m3.metric("Ø-Upside", _pct(row.get("avg_upside")))
+        m3.metric("Kurspotenzial", _pct(row.get("avg_upside")))
         m4, m5, m6 = st.columns(3)
         m4.metric("KGV fwd", _mult(row.get("kgv_fwd")))
         m5.metric("Konfidenz", str(row.get("confidence") or "—"),
