@@ -66,19 +66,24 @@ SCREENER_COLS: list[tuple[str, str, str | None]] = [
     ("M6 P/B", "m6", FMT_PRICE),
     ("M7 EV/EBITDA", "m7", FMT_PRICE),
     ("M8 DCF", "m8", FMT_PRICE),
-    ("#Methoden", "n_methods", None),
+    ("#Methoden (final)", "n_methods", None),
     ("Blended Fair Value (€)", "blended_fair_value", FMT_PRICE),
     ("Blended Upside", "blended_upside", FMT_PCT),
     ("Konsens-Upside", "consensus_upside", FMT_PCT),
     ("Ø-Upside", "avg_upside", FMT_PCT),
     ("Trefferquote 12M", "win_rate_1y", FMT_PCT),
     ("BUY-SIGNAL", "signal", None),
+    ("Konfidenz", "confidence", None),
     ("Analysten-Konsens", "rec_key", None),
     ("PVGO %", "pvgo_pct", FMT_PCT),
-    ("Divergenz", "divergence", FMT_PCT),
+    ("Divergenz (getrimmt)", "divergence", FMT_PCT),
+    ("Genutzte Methoden", "used_methods", None),
+    ("Ausgeschlossen (Grund)", "dropped_methods", None),
 ]
 
 SIGNAL_COL_HEADER = "BUY-SIGNAL"
+CONFIDENCE_HEADER = "Konfidenz"
+CONF_FILL = {"Hoch": "C6EFCE", "Mittel": "FFEB9C", "Niedrig": "FFC7CE"}
 
 
 def _cell_value(val: Any) -> Any:
@@ -98,7 +103,7 @@ def _cell_value(val: Any) -> Any:
 def build_workbook(
     df: pd.DataFrame,
     cfg: dict[str, Any],
-    medians: dict[str, dict[str, float]],
+    stats: dict[str, Any],
     run_date: datetime,
     details: list[str] | None = None,
 ) -> Workbook:
@@ -115,7 +120,7 @@ def build_workbook(
     _sheet_screener(wb.create_sheet("Screener"), df)
     _sheet_screener(wb.create_sheet("Screener (Ø-Upside)"),
                     df.sort_values("avg_upside", ascending=False, na_position="last"))
-    _sheet_assumptions(wb.create_sheet("Annahmen"), cfg, medians)
+    _sheet_assumptions(wb.create_sheet("Annahmen"), cfg, stats)
     _sheet_methodik(wb.create_sheet("Methodik"), cfg, run_date, fx)
     _sheet_top_ideas(wb.create_sheet("Top-Ideen"), df)
 
@@ -151,6 +156,11 @@ def _sheet_screener(ws: Worksheet, df: pd.DataFrame) -> None:
             if fmt and isinstance(val, (int, float)):
                 cell.number_format = fmt
         _color_signal_cell(ws.cell(row=r, column=signal_col_idx))
+        if CONFIDENCE_HEADER in headers:
+            conf_cell = ws.cell(row=r, column=headers.index(CONFIDENCE_HEADER) + 1)
+            fill = CONF_FILL.get(str(conf_cell.value or ""))
+            if fill:
+                conf_cell.fill = PatternFill("solid", fgColor=fill)
 
     ws.freeze_panes = "A2"
     last_col = get_column_letter(len(headers))
@@ -191,9 +201,10 @@ def _color_signal_cell(cell: Any) -> None:
 # b) Annahmen
 # =============================================================================
 def _sheet_assumptions(ws: Worksheet, cfg: dict[str, Any],
-                       medians: dict[str, dict[str, float]]) -> None:
+                       stats: dict[str, Any]) -> None:
     ws["A1"] = "Annahmen (Eingaben — gelb hinterlegt, ohne Codeänderung anpassbar)"
     ws["A1"].font = TITLE_FONT
+    stats = stats or {}
 
     rows: list[tuple[str, Any, str | None]] = [
         ("Risk-free rate (rf)", cfg["risk_free_rate"], FMT_PCT),
@@ -225,29 +236,36 @@ def _sheet_assumptions(ws: Worksheet, cfg: dict[str, Any],
             cell.number_format = fmt
         r += 1
 
-    # Sektor-Median-Multiplikatoren-Tabelle
+    # Peer-Median-Multiplikatoren je GICS Sub-Industry (Basis der Comparables)
+    sub = stats.get("sub_industry", {}) if isinstance(stats, dict) else {}
+    sector_stats = stats.get("sector", {}) if isinstance(stats, dict) else {}
     r += 1
-    ws.cell(row=r, column=1, value="Berechnete Sektor-Median-Multiplikatoren "
-            "(faire Multiplikatoren der Comparable-Methoden)").font = TITLE_FONT
+    ws.cell(row=r, column=1, value="Berechnete Peer-Median-Multiplikatoren "
+            "je GICS Sub-Industry (Fallback: Sektor/global)").font = TITLE_FONT
     r += 1
-    med_headers = ["GICS-Sektor", "PE (fwd)", "P/S", "P/B", "EV/EBITDA"]
+    med_headers = ["Gruppe", "#Peers", "PE (fwd)", "P/S", "P/B", "EV/EBITDA", "Netto-Marge"]
     for c_idx, h in enumerate(med_headers, start=1):
         cell = ws.cell(row=r, column=c_idx, value=h)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
     r += 1
-    for sector in sorted(medians.keys()):
-        m = medians[sector]
-        ws.cell(row=r, column=1, value=sector).font = NORMAL_FONT
-        for c_idx, key in enumerate(("pe", "ps", "pb", "ev_ebitda"), start=2):
+    source = sub if sub else sector_stats
+    for name in sorted(source.keys()):
+        m = source[name]
+        ws.cell(row=r, column=1, value=name).font = NORMAL_FONT
+        ws.cell(row=r, column=2, value=_cell_value(m.get("n"))).font = NORMAL_FONT
+        for c_idx, key in enumerate(("pe", "ps", "pb", "ev_ebitda"), start=3):
             cell = ws.cell(row=r, column=c_idx, value=_cell_value(m.get(key)))
             cell.number_format = FMT_MULT
             cell.font = NORMAL_FONT
+        nm = ws.cell(row=r, column=7, value=_cell_value(m.get("net_margin")))
+        nm.number_format = FMT_PCT
+        nm.font = NORMAL_FONT
         r += 1
 
     ws.column_dimensions["A"].width = 45
-    for col in ("B", "C", "D", "E"):
-        ws.column_dimensions[col].width = 16
+    for col in ("B", "C", "D", "E", "F", "G"):
+        ws.column_dimensions[col].width = 14
 
 
 # =============================================================================

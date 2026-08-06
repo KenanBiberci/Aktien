@@ -75,6 +75,10 @@ def derive_row_fields(row: dict[str, Any]) -> dict[str, Any]:
     div_yield = (dps / price) if (_pos(price)) else NaN
     payout = (dps / eps_fwd) if (_pos(eps_fwd)) else NaN
 
+    net_income = _num(row.get("net_income"))
+    net_margin = (net_income / revenue) if (is_finite(net_income) and _pos(revenue)) else NaN
+    equity = (bvps * shares) if (is_finite(bvps) and is_finite(shares)) else NaN
+
     row["dps"] = dps
     row["net_debt"] = net_debt
     row["sps"] = sps
@@ -83,6 +87,8 @@ def derive_row_fields(row: dict[str, Any]) -> dict[str, Any]:
     row["kgv_fwd"] = kgv_fwd
     row["div_yield"] = div_yield
     row["payout"] = payout
+    row["net_margin"] = net_margin
+    row["equity"] = equity
 
     # Währungs-Mismatch: Kurs (Notierungswährung) vs. Bilanzwährung. Trifft v. a.
     # ADRs (Kurs USD, Umsatz/EBITDA in JPY/CNY/TWD). Dann sind umsatz-/EBITDA-
@@ -133,43 +139,80 @@ def stage1_growth(row: dict[str, Any], cfg: dict[str, Any]) -> float:
 
 
 # =============================================================================
-# Sektor-Median-Multiplikatoren (Schritt 3 Ende, Law-of-one-price)
+# Peer-Multiplikatoren (Sub-Industry -> Sektor -> global; Law-of-one-price)
 # =============================================================================
-def compute_sector_medians(df: pd.DataFrame) -> dict[str, dict[str, float]]:
-    """Je GICS-Sektor Median von kgv_fwd, P/S, P/B, EV/EBITDA.
+PEER_METRICS = ("pe", "ps", "pb", "ev_ebitda", "net_margin")
 
-    Erwartet Spalten: sector, kgv_fwd, price, sps, bvps, shares, net_debt, ebitda.
+
+def compute_peer_stats(df: pd.DataFrame) -> dict[str, dict[str, dict[str, float]]]:
+    """Peer-Mediane je Gruppierungsebene ('sub_industry', 'sector').
+
+    Rückgabe: {level: {gruppe: {'pe','ps','pb','ev_ebitda','net_margin','n'}}}.
+    Mismatch-Titel (Kurs- vs. Bilanzwährung) werden aus P/S und EV/EBITDA
+    herausgehalten (verzerren die Ratios).
     """
     work = df.copy()
 
     def _mismatch(r: pd.Series) -> bool:
         return bool(r.get("fx_mismatch")) if "fx_mismatch" in r else False
 
-    # Mismatch-Titel (Kurs- vs. Bilanzwährung) verzerren umsatz-/EBITDA-Ratios ->
-    # aus den Sektor-Medianen für P/S und EV/EBITDA heraushalten.
-    work["ps"] = work.apply(
+    work["_ps"] = work.apply(
         lambda r: NaN if _mismatch(r) else (
-            (r["price"] / r["sps"]) if _pos(_num(r["sps"])) else NaN), axis=1
-    )
-    work["pb"] = work.apply(
-        lambda r: (r["price"] / r["bvps"]) if _pos(_num(r["bvps"])) else NaN, axis=1
-    )
-    work["ev_ebitda"] = work.apply(
-        lambda r: NaN if _mismatch(r) else _ev_ebitda_row(r), axis=1
-    )
+            (r["price"] / r["sps"]) if _pos(_num(r["sps"])) else NaN), axis=1)
+    work["_pb"] = work.apply(
+        lambda r: (r["price"] / r["bvps"]) if _pos(_num(r["bvps"])) else NaN, axis=1)
+    work["_ev"] = work.apply(
+        lambda r: NaN if _mismatch(r) else _ev_ebitda_row(r), axis=1)
 
-    medians: dict[str, dict[str, float]] = {}
-    for sector, grp in work.groupby("sector"):
-        medians[sector] = {
-            "pe": _median_positive(grp["kgv_fwd"]),
-            "ps": _median_positive(grp["ps"]),
-            "pb": _median_positive(grp["pb"]),
-            "ev_ebitda": _median_positive(grp["ev_ebitda"]),
-        }
-    return medians
+    stats: dict[str, dict[str, dict[str, float]]] = {}
+    for level in ("sub_industry", "sector"):
+        if level not in work.columns:
+            stats[level] = {}
+            continue
+        level_stats: dict[str, dict[str, float]] = {}
+        for grp_name, grp in work.groupby(level):
+            key = str(grp_name).strip()
+            if not key or key.lower() in ("nan", "none", ""):
+                continue
+            level_stats[key] = {
+                "pe": _median_positive(grp["kgv_fwd"]),
+                "ps": _median_positive(grp["_ps"]),
+                "pb": _median_positive(grp["_pb"]),
+                "ev_ebitda": _median_positive(grp["_ev"]),
+                "net_margin": _median_finite(grp.get("net_margin", pd.Series(dtype=float))),
+                "n": float(len(grp)),
+            }
+        stats[level] = level_stats
+    return stats
 
 
-def _ev_ebitda_row(r: pd.Series) -> float:
+def peer_stat(metric: str, row: dict[str, Any], stats: dict[str, Any],
+              cfg: dict[str, Any]) -> float:
+    """Peer-Wert für `metric`: Sub-Industry (>= min_peers) -> Sektor -> global.
+
+    Für Multiplikatoren fällt der globale Fallback auf `fallback_multiples`;
+    für 'net_margin' gibt es keinen globalen Fallback (-> NaN).
+    """
+    min_peers = int(cfg.get("peer", {}).get("min_peers", 5))
+    sub = str(row.get("sub_industry") or "").strip()
+    sec = str(row.get("sector") or "").strip()
+
+    for level, name in (("sub_industry", sub), ("sector", sec)):
+        grp = stats.get(level, {}).get(name)
+        if grp and grp.get("n", 0) >= min_peers:
+            val = grp.get(metric, NaN)
+            if metric == "net_margin":
+                if is_finite(val):
+                    return float(val)
+            elif _pos(val):
+                return float(val)
+    # globaler Fallback nur für Multiplikatoren
+    if metric in ("pe", "ps", "pb", "ev_ebitda"):
+        return float(cfg["fallback_multiples"][metric])
+    return NaN
+
+
+def _ev_ebitda_row(r: Any) -> float:
     price = _num(r["price"])
     shares = _num(r["shares"])
     net_debt = _num(r["net_debt"])
@@ -184,22 +227,12 @@ def _ev_ebitda_row(r: pd.Series) -> float:
 
 def _median_positive(series: pd.Series) -> float:
     vals = [float(x) for x in series if _pos(x)]
-    if not vals:
-        return NaN
-    return float(median(vals))
+    return float(median(vals)) if vals else NaN
 
 
-def sector_multiple(
-    sector: str,
-    key: str,
-    medians: dict[str, dict[str, float]],
-    cfg: dict[str, Any],
-) -> float:
-    """Sektor-Median bevorzugt; nur falls fehlend -> globaler Fallback."""
-    m = medians.get(sector, {}).get(key, NaN)
-    if _pos(m):
-        return m
-    return float(cfg["fallback_multiples"][key])
+def _median_finite(series: pd.Series) -> float:
+    vals = [float(x) for x in series if is_finite(x)]
+    return float(median(vals)) if vals else NaN
 
 
 # =============================================================================
@@ -240,11 +273,24 @@ def m4_comparable_pe(sector_pe: float, eps_fwd: float) -> float:
     return sector_pe * eps_fwd
 
 
-def m5_price_sales(sector_ps: float, sps: float) -> float:
-    """M5 P/S."""
-    if not (_pos(sector_ps) and _pos(sps)):
+def m5_price_sales(peer_ps: float, sps: float, net_margin: float,
+                   peer_margin: float, cfg: dict[str, Any]) -> float:
+    """M5 P/S — margen-adjustiert (fairer P/S = Peer-P/S x eigene/Peer-Marge).
+
+    Verhindert Überschätzung margenschwacher Titel (z. B. Kliniken): eine niedrige
+    Nettomarge zieht den fairen P/S nach unten. Ohne verwertbare Marge -> NaN.
+    """
+    if not (_pos(peer_ps) and _pos(sps)):
         return NaN
-    return sector_ps * sps
+    ea = cfg.get("method_eligibility", {})
+    if not ea.get("ps_margin_adjust", True):
+        return peer_ps * sps
+    if ea.get("ps_skip_if_margin_nonpositive", True) and not _pos(net_margin):
+        return NaN                      # negative/fehlende Marge -> P/S nicht sinnvoll
+    if not _pos(peer_margin):
+        return NaN                      # ohne Peer-Marge nicht adjustierbar
+    fair_ps = peer_ps * (net_margin / peer_margin)
+    return fair_ps * sps if _pos(fair_ps) else NaN
 
 
 def m6_price_book(sector_pb: float, bvps: float) -> float:
@@ -262,22 +308,40 @@ def m7_ev_ebitda(sector_ev: float, ebitda: float, net_debt: float, shares: float
     return (ev - net_debt) / shares
 
 
-def m8_dcf_fcff(
+def m8_dcf_two_stage(
     operating_cashflow: float,
     capex: float,
+    fcff_cagr: float,
     wacc_val: float,
-    g: float,
     net_debt: float,
     shares: float,
+    cfg: dict[str, Any],
 ) -> float:
-    """M8 DCF/FCFF (wachsende Perpetuität; guard wacc>g)."""
+    """M8 DCF/FCFF — 2-Stufen: explizite Phase (gedecktes Wachstum) + Terminal Value.
+
+    FCFF = OperatingCF - |CapEx|. Ohne FCFF-Historie (kein Wachstum schätzbar) -> NaN
+    (keine Notannahmen). WACC-g-Abstand wird erzwungen; Wachstum hart gedeckelt.
+    """
     if not (is_finite(operating_cashflow) and is_finite(capex)):
         return NaN
-    fcff = operating_cashflow - capex  # capex ist bei yfinance i.d.R. negativ
-    if not (_pos(fcff) and is_finite(wacc_val) and wacc_val > g and _pos(shares)
-            and is_finite(net_debt)):
+    fcff = operating_cashflow - abs(capex)
+    if not (_pos(fcff) and _pos(shares) and is_finite(net_debt)):
         return NaN
-    firm_value = fcff * (1 + g) / (wacc_val - g)
+    if not is_finite(fcff_cagr):
+        return NaN                      # keine Historie -> Wachstum unbekannt -> NaN
+
+    d = cfg.get("dcf", {})
+    years = int(d.get("explicit_years", 10))
+    g1 = min(float(fcff_cagr), float(d.get("stage1_growth_cap", 0.12)))
+    g1 = max(g1, -0.05)                  # extreme negative Historien bändigen
+    gt = min(float(cfg["terminal_growth"]), float(d.get("terminal_growth_max", 0.025)))
+    w = max(_num(wacc_val), gt + float(d.get("min_wacc_minus_g", 0.04)))
+
+    pv_explicit = sum(fcff * (1 + g1) ** t / (1 + w) ** t for t in range(1, years + 1))
+    fcff_t = fcff * (1 + g1) ** years
+    tv = fcff_t * (1 + gt) / (w - gt)
+    pv_terminal = tv / (1 + w) ** years
+    firm_value = pv_explicit + pv_terminal
     return (firm_value - net_debt) / shares
 
 
@@ -308,58 +372,95 @@ def supplementary_metrics(row: dict[str, Any], r: float) -> dict[str, Any]:
 
 
 # =============================================================================
-# Schritt 5 — Blend + Signal
+# Schritt 5 — Blend (Kappung + Trimmen) + Konfidenz + Signal
 # =============================================================================
+METHOD_LABELS = {
+    "m1": "M1 Gordon", "m2": "M2 DDM", "m3": "M3 Fund.KGV", "m4": "M4 KGV",
+    "m5": "M5 P/S", "m6": "M6 P/B", "m7": "M7 EV/EBITDA", "m8": "M8 DCF",
+}
+
+
 def blend_and_signal(
     methods_map: dict[str, float],
+    reasons: dict[str, str],
     price: float,
     target: float,
     payout: float,
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    """Cross-Check-Blend (Median) + Buy/Hold/Sell-Signal.
+    """Blend über getrimmtes Methodenset + Konfidenz + gedeckeltes Signal.
 
-    methods_map: {'m1':..,'m2':..,'m3':..,'m4':..,'m5':..,'m6':..,'m7':..,'m8':..}
-    M1-M3 nur, wenn payout >= gate; M4-M8 immer (falls nicht NaN).
+    Ablauf: Eignung (M1-M3 nur bei payout>=gate) -> Hard-Drop von Ausreißern
+    [clamp.lower_x, clamp.upper_x]*Kurs -> Trim (±pct_band um Median, min_keep) ->
+    Median = Blended Fair Value; Divergenz auf getrimmtem Set; Konfidenz + Signal-Gate.
     """
     gate = float(cfg["ddm_payout_gate"])
     th = cfg["signal_thresholds"]
-    strong_buy = float(th["strong_buy"])
-    buy = float(th["buy"])
-    hold_floor = float(th["hold_floor"])
+    strong_buy, buy, hold_floor = (float(th["strong_buy"]), float(th["buy"]),
+                                   float(th["hold_floor"]))
+    clamp = cfg.get("clamp", {})
+    lo, hi = float(clamp.get("lower_x", 0.3)), float(clamp.get("upper_x", 3.0))
+    tcfg = cfg.get("trim", {})
+    pct_band = float(tcfg.get("pct_band", 0.5))
+    min_keep = int(tcfg.get("min_keep", 2))
+    conf = cfg.get("confidence", {})
 
     use_ddm = is_finite(payout) and payout >= gate
-    selected: list[float] = []
-    if use_ddm:
-        selected += [methods_map.get("m1", NaN), methods_map.get("m2", NaN),
-                     methods_map.get("m3", NaN)]
-    selected += [methods_map.get(k, NaN) for k in ("m4", "m5", "m6", "m7", "m8")]
-    selected = [x for x in selected if is_finite(x) and x > 0]
+    blend_keys = (["m1", "m2", "m3"] if use_ddm else []) + ["m4", "m5", "m6", "m7", "m8"]
+    if not use_ddm:
+        for k in ("m1", "m2", "m3"):
+            reasons.setdefault(k, "Dividende zu gering (DDM-Gate)")
 
-    # Plausibilitätsfilter: Methoden-Werte, die absurd weit vom Kurs weg liegen
-    # (Datenfehler oder krasse mechanische Überschätzung, z. B. Mehrklassen-Aktien),
-    # vor dem Blend verwerfen. Band aus config (Standard 0,2x–5x Kurs).
-    band = cfg.get("plausibility", {})
-    lo = float(band.get("min_ratio", 0.2))
-    hi = float(band.get("max_ratio", 5.0))
+    # gültige Kandidaten
+    candidates = {k: methods_map[k] for k in blend_keys
+                  if is_finite(methods_map.get(k, NaN)) and methods_map[k] > 0}
+
+    # 1) Hard-Drop von Ausreißern relativ zum Kurs
     if is_finite(price) and price > 0:
-        selected = [x for x in selected if lo * price <= x <= hi * price]
+        for k in list(candidates):
+            if not (lo * price <= candidates[k] <= hi * price):
+                reasons[k] = f"Ausreißer (>{hi:g}x / <{lo:g}x Kurs)"
+                del candidates[k]
 
-    n_methods = len(selected)
-    blended_fair_value = float(median(selected)) if selected else NaN
-    divergence = (max(selected) / min(selected) - 1) if len(selected) >= 2 else NaN
+    # 2) Trim: nur Werte nahe am Median behalten (mind. min_keep)
+    kept = dict(candidates)
+    if len(candidates) > min_keep:
+        med0 = median(candidates.values())
+        near = {k: v for k, v in candidates.items()
+                if med0 <= 0 or abs(v - med0) <= pct_band * med0}
+        if len(near) < min_keep:
+            near = dict(sorted(candidates.items(), key=lambda kv: abs(kv[1] - med0))[:min_keep])
+        for k in candidates:
+            if k not in near:
+                reasons[k] = "getrimmt (weit vom Median)"
+        kept = near
+
+    final = list(kept.values())
+    n_final = len(final)
+    blended_fair_value = float(median(final)) if final else NaN
+    divergence = (max(final) / min(final) - 1) if n_final >= 2 else NaN
 
     blended_upside = (blended_fair_value / price - 1) if (
         is_finite(blended_fair_value) and _pos(price)) else NaN
     consensus_upside = (target / price - 1) if (is_finite(target) and _pos(price)) else NaN
-
     upsides = [u for u in (blended_upside, consensus_upside) if is_finite(u)]
     avg_upside = float(np.mean(upsides)) if upsides else NaN
 
-    # Signal
-    if not is_finite(avg_upside) or (n_methods < 2 and not is_finite(consensus_upside)):
+    # Konfidenz
+    high_div = float(conf.get("divergence_high_conf", 0.35))
+    low_div = float(conf.get("divergence_low_conf", 0.75))
+    min_high = int(conf.get("min_methods_high_conf", 4))
+    if is_finite(divergence) and divergence <= high_div and n_final >= min_high:
+        confidence = "Hoch"
+    elif (is_finite(divergence) and divergence >= low_div) or n_final < 2:
+        confidence = "Niedrig"
+    else:
+        confidence = "Mittel"
+
+    # Basis-Signal aus Ø-Upside
+    if not is_finite(avg_upside) or (n_final < 2 and not is_finite(consensus_upside)):
         signal = "N/A – Datenlücke"
-    elif avg_upside >= strong_buy and n_methods >= 3:
+    elif avg_upside >= strong_buy and n_final >= 3:
         signal = "STRONG BUY"
     elif avg_upside >= buy:
         signal = "BUY"
@@ -368,13 +469,31 @@ def blend_and_signal(
     else:
         signal = "REDUCE"
 
+    # Signal-Gate: hohe Divergenz oder niedrige Konfidenz -> nie STRONG BUY
+    block = float(conf.get("block_strong_buy_above", 0.60))
+    if signal == "STRONG BUY" and is_finite(divergence) and divergence > block:
+        signal = "BUY"
+    if confidence == "Niedrig" and signal not in ("N/A – Datenlücke",):
+        if signal == "STRONG BUY":
+            signal = "BUY"
+        signal = f"{signal} (niedrige Konfidenz)"
+
+    used_methods = ", ".join(METHOD_LABELS.get(k, k) for k in kept)
+    dropped_methods = "; ".join(
+        f"{METHOD_LABELS.get(k, k)}: {reasons[k]}"
+        for k in ("m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8")
+        if k in reasons and k not in kept)
+
     return {
-        "n_methods": n_methods,
+        "n_methods": n_final,
         "blended_fair_value": blended_fair_value,
         "blended_upside": blended_upside,
         "consensus_upside": consensus_upside,
         "avg_upside": avg_upside,
         "divergence": divergence,
+        "confidence": confidence,
+        "used_methods": used_methods,
+        "dropped_methods": dropped_methods,
         "signal": signal,
     }
 
@@ -384,20 +503,23 @@ def blend_and_signal(
 # =============================================================================
 def value_row(
     row: dict[str, Any],
-    medians: dict[str, dict[str, float]],
+    stats: dict[str, Any],
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    """Berechnet alle Methoden + Blend + Signal für eine (bereits abgeleitete) Zeile."""
+    """Berechnet alle Methoden + Blend + Signal für eine (bereits abgeleitete) Zeile.
+
+    `stats` sind die Peer-Statistiken aus compute_peer_stats (Sub-Industry/Sektor).
+    """
     g = float(cfg["terminal_growth"])
     n = int(cfg["stage1_years"])
     gate = float(cfg["ddm_payout_gate"])
+    req_eq = set(cfg.get("method_eligibility", {}).get("require_positive_equity", []))
 
     beta = _num(row.get("beta"))
     r = cost_of_equity(beta, cfg)
     wacc_val = wacc(row, r, cfg)
     g1 = stage1_growth(row, cfg)
 
-    sector = row.get("sector", "")
     dps = _num(row.get("dps"))
     eps_fwd = _num(row.get("eps_fwd"))
     payout = _num(row.get("payout"))
@@ -408,34 +530,45 @@ def value_row(
     shares = _num(row.get("shares"))
     price = _num(row.get("price"))
     target = _num(row.get("target"))
+    net_margin = _num(row.get("net_margin"))
+    equity = _num(row.get("equity"))
+    mismatch = bool(row.get("fx_mismatch"))
+    reasons: dict[str, str] = {}
 
-    sector_pe = sector_multiple(sector, "pe", medians, cfg)
-    sector_ps = sector_multiple(sector, "ps", medians, cfg)
-    sector_pb = sector_multiple(sector, "pb", medians, cfg)
-    sector_ev = sector_multiple(sector, "ev_ebitda", medians, cfg)
+    peer_pe = peer_stat("pe", row, stats, cfg)
+    peer_ps = peer_stat("ps", row, stats, cfg)
+    peer_pb = peer_stat("pb", row, stats, cfg)
+    peer_ev = peer_stat("ev_ebitda", row, stats, cfg)
+    peer_margin = peer_stat("net_margin", row, stats, cfg)
+
+    equity_ok = _pos(equity)
 
     methods_map = {
         "m1": m1_gordon_growth(dps, r, g, payout, gate),
         "m2": m2_two_stage_ddm(dps, r, g1, g, n, payout, gate),
         "m3": m3_justified_pe(eps_fwd, r, g, payout, gate),
-        "m4": m4_comparable_pe(sector_pe, eps_fwd),
-        "m5": m5_price_sales(sector_ps, sps),
-        "m6": m6_price_book(sector_pb, bvps),
-        "m7": m7_ev_ebitda(sector_ev, ebitda, net_debt, shares),
-        "m8": m8_dcf_fcff(
+        "m4": m4_comparable_pe(peer_pe, eps_fwd),
+        "m5": NaN if mismatch else m5_price_sales(peer_ps, sps, net_margin, peer_margin, cfg),
+        "m6": (m6_price_book(peer_pb, bvps)
+               if (equity_ok or "pb" not in req_eq) else NaN),
+        "m7": NaN if mismatch else m7_ev_ebitda(peer_ev, ebitda, net_debt, shares),
+        "m8": NaN if mismatch else m8_dcf_two_stage(
             _num(row.get("operating_cashflow")), _num(row.get("capex")),
-            wacc_val, g, net_debt, shares,
-        ),
-        "m9": m9_asset_based(bvps),
+            _num(row.get("fcff_cagr")), wacc_val, net_debt, shares, cfg),
+        "m9": (m9_asset_based(bvps) if (equity_ok or "asset" not in req_eq) else NaN),
     }
 
-    # Bei Währungs-Mismatch (Kurs vs. Bilanzwährung, z. B. ADRs) sind die
-    # umsatz-/EBITDA-/Cashflow-basierten Methoden ungültig -> NaN. Die eps-/
-    # dividendenbasierten (M1-M4) und M6/M9 bleiben (in Notierungswährung).
-    if row.get("fx_mismatch"):
-        methods_map["m5"] = NaN
-        methods_map["m7"] = NaN
-        methods_map["m8"] = NaN
+    # Gründe für nicht anwendbare Methoden (für Transparenz in App/PDF/Excel)
+    if mismatch:
+        for k in ("m5", "m7", "m8"):
+            reasons[k] = "Währungs-Mismatch (Kurs vs. Bilanz)"
+    if not equity_ok and "pb" in req_eq and not is_finite(methods_map["m6"]):
+        reasons["m6"] = "negatives/fehlendes Eigenkapital"
+    if not is_finite(methods_map["m5"]) and "m5" not in reasons:
+        reasons["m5"] = ("Marge <= 0 / P/S nicht adjustierbar"
+                         if not _pos(net_margin) else "P/S nicht berechenbar")
+    if not is_finite(methods_map["m8"]) and "m8" not in reasons:
+        reasons["m8"] = "kein FCFF / keine Historie"
 
     result = dict(row)
     result["r"] = r
@@ -445,5 +578,5 @@ def value_row(
         result[key] = val
 
     result.update(supplementary_metrics(row, r))
-    result.update(blend_and_signal(methods_map, price, target, payout, cfg))
+    result.update(blend_and_signal(methods_map, reasons, price, target, payout, cfg))
     return result
