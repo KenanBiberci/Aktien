@@ -209,32 +209,53 @@ def _resignal(avg_upside, n_methods, divergence, confidence, cfg) -> str:
     return sig
 
 
-def refresh_prices_live(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Holt aktuelle Kurse (yfinance, gebündelt), rechnet nach EUR um und
-    aktualisiert Kurs + Upsides + Signal. Fundamentaldaten/faire Werte bleiben
-    vom letzten Cloud-Lauf. Rückgabe: (aktualisiertes df, Anzahl aktualisiert)."""
+def _live_prices(tickers: list[str], chunk: int = 60) -> dict[str, float]:
+    """Aktuelle Kurse (Notierungswährung) je Ticker, in Häppchen gegen Rate-Limits."""
+    import time
+
     import yfinance as yf
 
     import backtest
+
+    prices: dict[str, float] = {}
+    for i in range(0, len(tickers), chunk):
+        part = tickers[i:i + chunk]
+        try:
+            data = yf.download(part, period="5d", interval="1d", progress=False,
+                               group_by="ticker", threads=True)
+        except Exception:  # noqa: BLE001 — Teil-Fehler überspringen
+            continue
+        if data is None or getattr(data, "empty", True):
+            continue
+        for t in part:
+            s = backtest._close_series(data, t)
+            if s is None:
+                continue
+            s = s.dropna()
+            if not s.empty and float(s.iloc[-1]) > 0:
+                prices[t] = float(s.iloc[-1])
+        time.sleep(0.4)
+    return prices
+
+
+def refresh_prices_live(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
+    """Holt aktuelle Kurse (yfinance, in Häppchen), rechnet nach EUR um und
+    aktualisiert Kurs + Upsides + Signal. Fundamentaldaten/faire Werte bleiben
+    vom letzten Cloud-Lauf. Rückgabe: (df, Anzahl aktualisiert, Anzahl gesamt)."""
     import fetch
 
     cfg = load_config()
     tickers = df["yahoo"].astype(str).tolist()
     rates = fetch.get_fx_rates(cfg)
-    data = yf.download(tickers, period="2d", interval="1d", progress=False,
-                       group_by="ticker", threads=True)
+    prices = _live_prices(tickers)
 
     out = df.copy()
     updated = 0
     for i in out.index:
         t = str(out.at[i, "yahoo"])
-        series = backtest._close_series(data, t)
-        if series is None:
+        p_nat = prices.get(t)
+        if p_nat is None:
             continue
-        series = series.dropna()
-        if series.empty:
-            continue
-        p_nat = float(series.iloc[-1])
         ccy = str(out.at[i, "currency_native"]) if "currency_native" in out.columns else "USD"
         divisor = rates.get(ccy, 1.0) or 1.0
         p_eur = p_nat / divisor
@@ -257,7 +278,7 @@ def refresh_prices_live(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
                 out.at[i, "confidence"] if "confidence" in out.columns else "",
                 cfg)
         updated += 1
-    return out, updated
+    return out, updated, len(out)
 
 
 # =============================================================================
@@ -288,20 +309,34 @@ with col_b:
     if st.button("💹 Kurse aktualisieren", use_container_width=True,
                  help="Holt die aktuellen Börsenkurse live und rechnet Upside & Signal "
                       "sofort neu (faire Werte bleiben vom letzten Lauf)."):
-        with st.spinner("Hole aktuelle Kurse …"):
+        with st.spinner("Hole aktuelle Kurse (in Häppchen) …"):
             try:
-                updated_df, n_upd = refresh_prices_live(load_data())
+                updated_df, n_upd, n_tot = refresh_prices_live(load_data())
                 st.session_state["live_df"] = updated_df
                 st.session_state["live_stamp"] = datetime.now().strftime("%H:%M")
-                st.success(f"{n_upd} Kurse aktualisiert.")
+                st.session_state["live_msg"] = (n_upd, n_tot)
                 st.rerun()
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Kurse konnten nicht geladen werden: {str(exc)[:150]}")
 with col_c:
     st.write("")
     if st.button("🔄 Neu berechnen", use_container_width=True,
-                 help="Kompletter Neulauf in der Cloud (alle Daten, ~2–3 Min)."):
+                 help="Kompletter Neulauf in der Cloud (alle Daten, ~2–3 Min). "
+                      "Benötigt GITHUB_TOKEN/GITHUB_REPO in den App-Secrets."):
         trigger_workflow()
+
+# Rückmeldung des letzten Live-Kurs-Updates (übersteht das st.rerun)
+if st.session_state.get("live_msg"):
+    n_upd, n_tot = st.session_state["live_msg"]
+    if n_upd >= max(1, int(0.6 * n_tot)):
+        st.success(f"✅ {n_upd} von {n_tot} Kursen live aktualisiert.")
+    elif n_upd > 0:
+        st.warning(f"⚠️ Nur {n_upd} von {n_tot} Kursen aktualisiert — Yahoo hat den Rest "
+                   "gerade gedrosselt. Gleich nochmal probieren.")
+    else:
+        st.error("Keine Live-Kurse erhalten (Yahoo drosselt gerade). "
+                 "Bitte in ein paar Minuten erneut versuchen.")
+    del st.session_state["live_msg"]
 
 # --- Übersichts-Kacheln je Signal --------------------------------------------
 counts = df["signal"].value_counts().to_dict() if "signal" in df.columns else {}
