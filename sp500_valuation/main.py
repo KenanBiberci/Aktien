@@ -63,6 +63,9 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
         except Exception as exc:  # noqa: BLE001 — statische Listen, sollten nicht failen
             log.warning("Zusatzliste %s nicht geladen: %s", loader.__name__, exc)
     constituents = pd.concat(parts, ignore_index=True)
+    if "sub_industry" not in constituents.columns:
+        constituents["sub_industry"] = ""
+    constituents["sub_industry"] = constituents["sub_industry"].fillna("")
     constituents = constituents.drop_duplicates(subset="yahoo").reset_index(drop=True)
     log.info("Universum gesamt: %d Titel (S&P 500 + Europa + weitere).", len(constituents))
     if limit:
@@ -74,15 +77,17 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
     failed: list[str] = []
     sector_by_yahoo = dict(zip(constituents["yahoo"], constituents["sector"]))
     security_by_yahoo = dict(zip(constituents["yahoo"], constituents["security"]))
+    sub_by_yahoo = dict(zip(constituents["yahoo"], constituents["sub_industry"]))
 
     for yahoo in tqdm(constituents["yahoo"], desc="Datenabruf", unit="ticker"):
         raw = fetch.fetch_ticker_raw(yahoo, cfg, refresh=refresh)
         if raw is None:
             failed.append(yahoo)
             continue
-        # Sektor/Name robust aus Konstituenten-CSV (nicht aus yfinance).
+        # Sektor/Name/Sub-Industry robust aus Konstituenten-CSV (nicht aus yfinance).
         raw["sector"] = sector_by_yahoo.get(yahoo, "Unknown")
         raw["security"] = security_by_yahoo.get(yahoo, yahoo)
+        raw["sub_industry"] = sub_by_yahoo.get(yahoo, "") or ""
         rows.append(valuation.derive_row_fields(raw))
 
     if not rows:
@@ -90,11 +95,11 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
 
     df = pd.DataFrame(rows)
 
-    # --- Schritt 3: Sektor-Median-Multiplikatoren ---
-    medians = valuation.compute_sector_medians(df)
+    # --- Schritt 3: Peer-Statistik (Sub-Industry -> Sektor -> global) ---
+    stats = valuation.compute_peer_stats(df)
 
     # --- Schritt 4: Bewertung je Zeile (in USD) ---
-    valued = [valuation.value_row(row.to_dict(), medians, cfg)
+    valued = [valuation.value_row(row.to_dict(), stats, cfg)
               for _, row in df.iterrows()]
     result = pd.DataFrame(valued)
 
@@ -118,12 +123,12 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
     if failed:
         log.warning("Fehlgeschlagene Ticker (%d): %s", len(failed), ", ".join(failed))
 
-    _write_outputs(result, cfg, medians, details)
+    _write_outputs(result, cfg, stats, details)
     return result
 
 
 def _write_outputs(result: pd.DataFrame, cfg: dict[str, Any],
-                   medians: dict[str, dict[str, float]],
+                   stats: dict[str, Any],
                    details: list[str] | None) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -135,7 +140,7 @@ def _write_outputs(result: pd.DataFrame, cfg: dict[str, Any],
     log.info("Ergebnis-Tabelle geschrieben: %s", parquet_path)
 
     # Excel: datiert + latest.xlsx
-    wb = excel.build_workbook(result, cfg, medians, run_date, details=details)
+    wb = excel.build_workbook(result, cfg, stats, run_date, details=details)
     dated_path = OUTPUT_DIR / f"sp500_valuation_{run_date.strftime('%Y%m%d')}.xlsx"
     latest_path = OUTPUT_DIR / "latest.xlsx"
     wb.save(dated_path)

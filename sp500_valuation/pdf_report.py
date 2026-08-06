@@ -108,6 +108,15 @@ def _signal_explanation(row: dict[str, Any]) -> str:
     rec = row.get("rec_key")
     if rec and str(rec).lower() not in ("nan", "none", ""):
         parts.append(f"Zum Vergleich: Analysten-Konsens laut Datenquelle ist '{rec}'.")
+
+    conf = str(row.get("confidence") or "")
+    if conf:
+        parts.append(f"Konfidenz: {conf}"
+                     + (" — kein Hochkonviktions-Signal, Schätzung unsicher."
+                        if conf == "Niedrig" else "."))
+    dropped = str(row.get("dropped_methods") or "")
+    if dropped and dropped.lower() not in ("nan", "none", ""):
+        parts.append(f"Nicht einbezogen: {dropped}.")
     return " ".join(parts)
 
 

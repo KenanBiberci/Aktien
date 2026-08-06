@@ -48,6 +48,7 @@ INFO_FIELDS: dict[str, str] = {
     "target": "targetMeanPrice",
     "rec_key": "recommendationKey",
     "n_analysts": "numberOfAnalystOpinions",
+    "net_income": "netIncomeToCommon",   # für Nettomarge (P/S-Adjustierung)
 }
 
 
@@ -80,11 +81,14 @@ def _constituents_from_wikipedia() -> pd.DataFrame | None:
         resp.raise_for_status()
         tables = pd.read_html(resp.text)
         table = tables[0]
+        sub = (table["GICS Sub-Industry"].astype(str).str.strip()
+               if "GICS Sub-Industry" in table.columns else "")
         out = pd.DataFrame(
             {
                 "symbol": table["Symbol"].astype(str).str.strip(),
                 "security": table["Security"].astype(str).str.strip(),
                 "sector": table["GICS Sector"].astype(str).str.strip(),
+                "sub_industry": sub,
             }
         )
         return out
@@ -106,11 +110,15 @@ def _constituents_from_csv() -> pd.DataFrame | None:
         # 'Security'/'GICS Sector' (aktuell). Beide Schemata unterstützen.
         name_col = _first_present(table, ["Name", "Security"])
         sector_col = _first_present(table, ["Sector", "GICS Sector"])
+        sub_col = next((c for c in ["GICS Sub-Industry", "Sub-Industry", "Sub Industry"]
+                        if c in table.columns), None)
         out = pd.DataFrame(
             {
                 "symbol": table["Symbol"].astype(str).str.strip(),
                 "security": table[name_col].astype(str).str.strip(),
                 "sector": table[sector_col].astype(str).str.strip(),
+                "sub_industry": (table[sub_col].astype(str).str.strip()
+                                 if sub_col else ""),
             }
         )
         return out
@@ -515,24 +523,37 @@ def _fetch_from_yfinance(yahoo_symbol: str, cfg: dict[str, Any]) -> dict[str, An
 
 
 def _extract_cashflow(tk: Any, yahoo_symbol: str) -> dict[str, Any]:
-    """operating_cashflow und capex für M8 (DCF) — best effort."""
-    result: dict[str, Any] = {"operating_cashflow": None, "capex": None}
+    """operating_cashflow, capex (aktuell) und fcff_cagr (Historie) für M8 (DCF)."""
+    result: dict[str, Any] = {"operating_cashflow": None, "capex": None,
+                              "fcff_cagr": None}
     try:
         cf = tk.cashflow
         if cf is None or cf.empty:
             return result
         latest = cf.columns[0]
 
-        def pick(*names: str) -> float | None:
+        def pick(*names: str, col: Any = latest) -> float | None:
             for name in names:
                 if name in cf.index:
-                    return _clean_number(cf.loc[name, latest])
+                    return _clean_number(cf.loc[name, col])
             return None
 
         result["operating_cashflow"] = pick(
-            "Operating Cash Flow", "Total Cash From Operating Activities"
-        )
+            "Operating Cash Flow", "Total Cash From Operating Activities")
         result["capex"] = pick("Capital Expenditure", "Capital Expenditures")
+
+        # FCFF-Historie über alle verfügbaren Jahre -> CAGR (ältestes -> neuestes).
+        fcffs: list[float] = []
+        for col in cf.columns:
+            ocf = pick("Operating Cash Flow", "Total Cash From Operating Activities", col=col)
+            cpx = pick("Capital Expenditure", "Capital Expenditures", col=col)
+            if ocf is not None and cpx is not None:
+                fcffs.append(ocf - abs(cpx))   # CapEx ist i. d. R. negativ
+        # cf.columns sind absteigend (neuestes zuerst) -> für CAGR umdrehen
+        fcffs = list(reversed(fcffs))
+        if len(fcffs) >= 2 and fcffs[0] > 0 and fcffs[-1] > 0:
+            n = len(fcffs) - 1
+            result["fcff_cagr"] = (fcffs[-1] / fcffs[0]) ** (1.0 / n) - 1.0
     except Exception as exc:  # noqa: BLE001
         log.debug("%s: Cashflow-Abruf-Problem: %s", yahoo_symbol, exc)
     return result

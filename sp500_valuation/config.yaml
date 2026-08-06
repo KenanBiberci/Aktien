@@ -41,12 +41,40 @@ currency:
     SEK: 11.30
     NOK: 11.70
 
-# --- Plausibilitätsfilter ----------------------------------------------------
-# Einzelne Methoden-Werte, die weiter als dieses Vielfache vom Kurs entfernt sind,
-# werden beim Blend ignoriert (Schutz vor Datenfehlern / mechanischen Ausreißern).
-plausibility:
-  min_ratio: 0.2      # unter 0,2x Kurs -> verwerfen
-  max_ratio: 5.0      # über 5x Kurs -> verwerfen
+# --- Peer-Multiplikatoren ----------------------------------------------------
+peer:
+  level: sub_industry          # Peer-Median auf GICS Sub-Industry statt Sektor
+  min_peers: 5                 # weniger Peers -> Fallback auf Sektor, dann global
+
+# --- Methoden-Eignung --------------------------------------------------------
+method_eligibility:
+  require_positive_equity: [pb, asset]   # P/B & Asset-based nur wenn Eigenkapital > 0
+  ps_margin_adjust: true       # P/S margen-adjustiert statt roh
+  ps_skip_if_margin_nonpositive: true
+
+# --- DCF (M8): 2-Stufen statt Perpetuität ------------------------------------
+dcf:
+  mode: two_stage
+  explicit_years: 10
+  stage1_growth_cap: 0.12      # FCFF-Wachstum Stufe 1 aus Historie, hart gedeckelt
+  terminal_growth_max: 0.025
+  min_wacc_minus_g: 0.04       # erzwungener Mindestabstand WACC - g
+
+# --- Ausreißer-Kappung + Trimmen ---------------------------------------------
+clamp:
+  lower_x: 0.3                 # Methodenwerte außerhalb [0.3*Kurs, 3*Kurs] = Ausreißer
+  upper_x: 3.0
+trim:
+  method: pct                  # pct | iqr
+  pct_band: 0.5                # nur Methoden innerhalb ±50 % des Medians behalten
+  min_keep: 2                  # nie unter 2 Methoden trimmen
+
+# --- Konfidenz + Signal-Gate -------------------------------------------------
+confidence:
+  divergence_high_conf: 0.35   # <= das -> Konfidenz hoch
+  divergence_low_conf: 0.75    # >= das -> Konfidenz niedrig
+  block_strong_buy_above: 0.60 # Divergenz darüber -> max. "BUY", nie STRONG BUY
+  min_methods_high_conf: 4
 
 # --- Backtest ----------------------------------------------------------------
 # Historische 12-Monats-Renditen (jahresweise) über so viele Jahre zurück.

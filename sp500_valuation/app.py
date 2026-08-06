@@ -233,6 +233,10 @@ with st.expander("🔎 Filter & Sortierung", expanded=not query):
                          disabled=not has_prob,
                          help="Anteil der letzten ~20 Jahre, in denen ein 12-Monats-"
                               "Halten Gewinn gebracht hätte.")
+    has_conf = "confidence" in df.columns
+    only_high_conf = st.checkbox("Nur hohe Konfidenz", value=False, disabled=not has_conf,
+                                 help="Nur Titel, bei denen die Methoden gut übereinstimmen "
+                                      "(geringe Divergenz, genug Methoden).")
     sort_options = {"Ø-Upside": "avg_upside", "Blended Upside": "blended_upside",
                     "Kurs": "price"}
     if has_prob:
@@ -260,6 +264,8 @@ else:
         view = view[view["avg_upside"].fillna(-99) >= min_upside / 100]
     if has_prob and min_prob > 0:
         view = view[view["win_rate_1y"].fillna(-1) >= min_prob / 100]
+if has_conf and only_high_conf:
+    view = view[view["confidence"] == "Hoch"]
 if sort_col not in view.columns:
     sort_col = "avg_upside"
 view = view.sort_values(sort_col, ascending=False, na_position="last")
@@ -286,7 +292,7 @@ with tab_screener:
     core = {
         "yahoo": "Ticker", "security": "Name", "price": "Kurs",
         "kgv_fwd": "KGV fwd", "avg_upside": "Ø-Upside", "win_rate_1y": "Trefferquote",
-        "signal": "Signal", "rec_key": "Konsens",
+        "signal": "Signal", "confidence": "Konfidenz", "rec_key": "Konsens",
     }
     avail = {k: v for k, v in core.items() if k in view.columns}
     table = view[list(avail.keys())].rename(columns=avail)
@@ -304,9 +310,17 @@ with tab_screener:
         fmt["Ø-Upside"] = "{:+.1%}"
     if "Trefferquote" in table:
         fmt["Trefferquote"] = "{:.0%}"
+    conf_bg = {"Hoch": "#d7f7df", "Mittel": "#ffeb9c", "Niedrig": "#ffc7ce"}
+
+    def _color_conf(val: str) -> str:
+        bg = conf_bg.get(str(val), "")
+        return f"background-color:{bg}" if bg else ""
+
     styled = table.style.format(fmt, na_rep="—")
     if "Signal" in table:
         styled = styled.map(_color_sig, subset=["Signal"])
+    if "Konfidenz" in table:
+        styled = styled.map(_color_conf, subset=["Konfidenz"])
 
     st.dataframe(styled, use_container_width=True, hide_index=True,
                  height=min(560, 44 + 35 * len(table)))
@@ -338,8 +352,9 @@ with tab_detail:
         m3.metric("Ø-Upside", _pct(row.get("avg_upside")))
         m4, m5, m6 = st.columns(3)
         m4.metric("KGV fwd", _mult(row.get("kgv_fwd")))
-        m5.metric("Div-Rendite", _pct(row.get("div_yield")))
-        m6.metric("Konsens", str(row.get("rec_key") or "—"))
+        m5.metric("Konfidenz", str(row.get("confidence") or "—"),
+                  help="Wie gut die Methoden übereinstimmen (Divergenz + Anzahl).")
+        m6.metric("Divergenz", _pct0(row.get("divergence")))
 
         st.markdown("**Bewertungsmethoden (fairer Preis je Aktie)**")
         labels = {"m1": "M1 Gordon", "m2": "M2 DDM", "m3": "M3 Justified PE",
@@ -350,6 +365,13 @@ with tab_detail:
         if pd.notna(row.get("pvgo_pct")):
             rows.append({"Methode": "PVGO %", "Fairer Preis (€)": _pct(row.get("pvgo_pct"))})
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        used = str(row.get("used_methods") or "")
+        dropped = str(row.get("dropped_methods") or "")
+        if used:
+            st.caption(f"**Genutzt im Blend:** {used}")
+        if dropped and dropped.lower() not in ("nan", "none"):
+            st.caption(f"**Ausgeschlossen:** {dropped}")
     else:
         st.info("Keine Titel im aktuellen Filter.")
 
