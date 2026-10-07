@@ -399,6 +399,8 @@ with st.expander("🔎 Filter & Sortierung", expanded=not query):
                     "Kurs": "price"}
     if has_prob:
         sort_options = {"Trefferquote": "win_rate_1y", **sort_options}
+    if "st_score" in df.columns and df["st_score"].notna().any():
+        sort_options["Kurzfrist-Score"] = "st_score"
     sort_label = st.selectbox("Sortieren nach", list(sort_options.keys()))
     sort_col = sort_options[sort_label]
 
@@ -450,7 +452,8 @@ with tab_screener:
     core = {
         "yahoo": "Ticker", "security": "Name", "price": "Kurs",
         "kgv_fwd": "KGV fwd", "avg_upside": "Kurspotenzial", "win_rate_1y": "Trefferquote",
-        "signal": "Signal", "confidence": "Konfidenz", "rec_key": "Konsens",
+        "signal": "Signal", "confidence": "Konfidenz", "st_score": "Kurzfrist",
+        "rec_key": "Konsens",
     }
     avail = {k: v for k, v in core.items() if k in view.columns}
     table = view[list(avail.keys())].rename(columns=avail)
@@ -468,6 +471,8 @@ with tab_screener:
         fmt["Kurspotenzial"] = "{:+.1%}"
     if "Trefferquote" in table:
         fmt["Trefferquote"] = "{:.0%}"
+    if "Kurzfrist" in table:
+        fmt["Kurzfrist"] = "{:.0f}"
     conf_bg = {"Hoch": "#d7f7df", "Mittel": "#ffeb9c", "Niedrig": "#ffc7ce"}
 
     def _color_conf(val: str) -> str:
