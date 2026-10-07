@@ -442,8 +442,8 @@ ORDERED_IDS = _view_ids + [t for t in df["yahoo"].astype(str).tolist()
 # =============================================================================
 # Tabs
 # =============================================================================
-tab_screener, tab_detail, tab_backtest, tab_pdf = st.tabs(
-    ["📊 Screener", "🔍 Detail", "📉 Backtest", "📄 PDF-Report"])
+tab_screener, tab_detail, tab_backtest, tab_short, tab_pdf = st.tabs(
+    ["📊 Screener", "🔍 Detail", "📉 Backtest", "⚡ Kurzfrist", "📄 PDF-Report"])
 
 # --- Screener ----------------------------------------------------------------
 with tab_screener:
@@ -599,6 +599,46 @@ with tab_backtest:
                     f"({rets[worst_i] * 100:+.1f} %). "
                     "Vergangene Wertentwicklung ist keine Garantie für die Zukunft."
                 )
+
+# --- Kurzfrist-Chancen (hochspekulativ) --------------------------------------
+with tab_short:
+    st.markdown("### ⚡ Kurzfrist-Chancen")
+    st.error(
+        "**Hochspekulativ — keine Prognose, keine Anlageberatung.** Dieser Reiter "
+        "zeigt Titel, die (a) gerade **Aufwärts-Schwung** haben und (b) historisch "
+        "**stark schwanken** (großes Monats-Ausschlag-Potenzial). **Großes Potenzial "
+        "nach oben = genauso großes Risiko nach unten.** Solche Titel können in Wochen "
+        "+40 % **oder −40 %** machen. Das ist das Gegenteil des soliden Langfrist-Modells.")
+
+    if "st_score" not in df.columns or not df["st_score"].notna().any():
+        st.info("Kurzfrist-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
+    else:
+        min_score = st.slider("Mindest-Kurzfrist-Score (0–100)", 0, 100, 70, 5,
+                              help="Höher = stärkerer Schwung und größeres Ausschlag-"
+                                   "Potenzial. Rein relativ zum Rest des Universums.")
+        sv = df[df["st_score"].fillna(-1) >= min_score].copy()
+        sv = sv.sort_values("st_score", ascending=False)
+        st.caption(f"{len(sv)} Titel · sortiert nach Kurzfrist-Score")
+
+        cols = {"yahoo": "Ticker", "security": "Name", "price": "Kurs",
+                "mom_3m": "Schwung 3 Mon.", "mret_p90": "typ. gutes Monatsplus",
+                "mret_max": "bestes Monatsplus", "st_score": "Score"}
+        avail = {k: v for k, v in cols.items() if k in sv.columns}
+        tbl = sv[list(avail.keys())].rename(columns=avail).head(60)
+        fmt = {}
+        if "Kurs" in tbl:
+            fmt["Kurs"] = "{:,.2f} €"
+        for c in ("Schwung 3 Mon.", "typ. gutes Monatsplus", "bestes Monatsplus"):
+            if c in tbl:
+                fmt[c] = "{:+.0%}"
+        if "Score" in tbl:
+            fmt["Score"] = "{:.0f}"
+        st.dataframe(tbl.style.format(fmt, na_rep="—"), use_container_width=True,
+                     hide_index=True, height=min(560, 44 + 35 * len(tbl)))
+        st.caption("**Schwung 3 Mon.** = Kursverlauf der letzten 3 Monate · "
+                   "**typ. gutes Monatsplus** = was der Titel in guten Monaten historisch "
+                   "schaffte (90. Perzentil) · **bestes Monatsplus** = größter Monatssprung "
+                   "der Historie. Alles Vergangenheit — keine Garantie.")
 
 # --- PDF-Report --------------------------------------------------------------
 with tab_pdf:

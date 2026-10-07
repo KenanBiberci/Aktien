@@ -112,6 +112,7 @@ def run(limit: int | None, refresh: bool, details: list[str] | None,
     # --- Backtest: historische 12-Monats-Renditen je Aktie (Trefferquote) ---
     bt_years = int(cfg.get("backtest", {}).get("years", 20))
     result = _attach_backtests(result, bt_years)
+    result = _attach_short_term_score(result, cfg)
 
     # --- Report ---
     n_total = len(result)
@@ -170,7 +171,7 @@ def _convert_to_eur(df: pd.DataFrame, rates: dict[str, float]) -> pd.DataFrame:
 
 
 def _attach_backtests(df: pd.DataFrame, years: int) -> pd.DataFrame:
-    """Ergänzt win_rate_1y, avg_return_1y und annual_returns_json je Aktie."""
+    """Ergänzt win_rate_1y, avg_return_1y, annual_returns_json und Kurzfrist-Felder."""
     out = df.copy()
     try:
         bt = backtest.compute_annual_backtests(out["yahoo"].astype(str).tolist(),
@@ -182,8 +183,34 @@ def _attach_backtests(df: pd.DataFrame, years: int) -> pd.DataFrame:
     out["avg_return_1y"] = out["yahoo"].map(lambda t: bt.get(str(t), {}).get("avg_return"))
     out["annual_returns_json"] = out["yahoo"].map(
         lambda t: json.dumps(bt[str(t)]) if str(t) in bt else None)
+    # Kurzfrist-Kennzahlen (hochspekulativ)
+    for col in ("mom_1m", "mom_3m", "mret_p90", "mret_max", "mret_vol", "dist_high"):
+        out[col] = out["yahoo"].map(lambda t, c=col: bt.get(str(t), {}).get(c))
     n = int(out["win_rate_1y"].notna().sum())
     log.info("Backtest-Trefferquote für %d/%d Titel berechnet.", n, len(out))
+    return out
+
+
+def _attach_short_term_score(df: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+    """Kombinierter Kurzfrist-Score (0-100) aus Momentum + Ausschlag-Potenzial.
+
+    Perzentil-Rang über das gesamte Universum, gewichtet laut config.short_term.
+    """
+    out = df.copy()
+    st = cfg.get("short_term", {})
+    w_mom = float(st.get("weight_momentum", 0.5))
+    w_swing = float(st.get("weight_swing", 0.5))
+
+    mom_blend = (0.6 * pd.to_numeric(out.get("mom_3m"), errors="coerce").fillna(0)
+                 + 0.4 * pd.to_numeric(out.get("mom_1m"), errors="coerce").fillna(0))
+    swing = pd.to_numeric(out.get("mret_p90"), errors="coerce")
+
+    mom_rank = mom_blend.rank(pct=True)
+    swing_rank = swing.rank(pct=True)
+    score = 100.0 * (w_mom * mom_rank + w_swing * swing_rank) / max(w_mom + w_swing, 1e-9)
+    # nur wo überhaupt Kurzfrist-Daten vorliegen
+    have = pd.to_numeric(out.get("mret_p90"), errors="coerce").notna()
+    out["st_score"] = score.where(have).round(0)
     return out
 
 

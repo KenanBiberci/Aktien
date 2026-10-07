@@ -81,6 +81,14 @@ confidence:
 backtest:
   years: 20
 
+# --- Kurzfrist-Chancen (hochspekulativ) --------------------------------------
+# Kombiniert aktuellen Aufwärts-Schwung (Momentum) mit historischer Ausschlag-
+# Größe (wie stark sich ein Titel in einem Monat bewegen kann). KEINE Prognose.
+short_term:
+  weight_momentum: 0.5      # Gewicht aktueller Schwung (0..1)
+  weight_swing: 0.5         # Gewicht historisches Ausschlag-Potenzial (0..1)
+  vol_window_months: 60     # Fenster für Volatilität/Perzentile (Monate)
+
 # --- Datenabruf --------------------------------------------------------------
 fetch:
   sleep_between_calls: 0.4  # Sekunden zwischen yfinance-Calls (Rate-Limit)
