@@ -49,6 +49,14 @@ SIGNAL_BG = {
 st.set_page_config(page_title="S&P-500 Valuation", layout="centered",
                    page_icon="📈", initial_sidebar_state="collapsed")
 
+# Präsentationsmodus (?modus=praesentation): blendet Hit Rate und den Momentum-/
+# Kurzfrist-Reiter aus und zeigt nur den Bewertungskern (DDM, DCF, Multiples).
+try:
+    _modus = str(st.query_params.get("modus", "")).strip().lower()
+except Exception:  # noqa: BLE001
+    _modus = ""
+DEMO = _modus in ("praesentation", "präsentation", "demo", "pro")
+
 # --- modernes, mobiles Styling -----------------------------------------------
 st.markdown(
     """
@@ -350,18 +358,23 @@ for c, sig in zip(kpi_cols, ["STRONG BUY", "BUY", "HOLD", "REDUCE"]):
             unsafe_allow_html=True,
         )
 
-with st.expander("❓ Was heißt das alles? (in einfachen Worten)"):
+with st.expander("❓ Begriffe kurz erklärt"):
     st.markdown(
-        "- **Signal** = die Ampel des Modells: **STRONG BUY / BUY** = laut Modell "
-        "günstig, **HOLD** = fair bewertet, **REDUCE** = eher teuer.\n"
-        "- **Kurspotenzial** = wie viel die Aktie theoretisch steigen könnte, bis sie "
-        "„fair\" bewertet ist. Beispiel: Kostet sie 100 € und wäre laut Modell 130 € "
-        "wert, sind das **+30 %**. Minus = das Modell hält sie für zu teuer.\n"
-        "- **Trefferquote** = in wie vielen der letzten ~20 Jahre man mit „1 Jahr "
-        "halten\" Gewinn gemacht hätte. Nur Vergangenheit, keine Garantie.\n"
-        "- **Konfidenz** = wie sicher sich das Modell ist (stimmen die Rechenwege "
-        "überein?): **Hoch** = verlässlicher, **Niedrig** = mit Vorsicht genießen.\n\n"
-        "⚠️ Alles sind regelbasierte Schätzungen — **keine Anlageberatung.**")
+        "- **Bewertungskern:** Dividendenmodelle (Gordon Growth, 2-Stufen-DDM, "
+        "Justified P/E), **DCF** (2-Stufen-FCFF) und **Branchenmultiples** (KGV, P/S, "
+        "P/B, EV/EBITDA ggü. Peers). Der **Blended Fair Value** ist der Median der "
+        "plausiblen Methoden.\n"
+        "- **Signal:** **STRONG BUY / BUY** = Kurs unter dem fairen Wert, "
+        "**HOLD** = fair bewertet, **REDUCE** = Kurs über dem fairen Wert.\n"
+        "- **Upside:** Abstand des fairen Werts zum Kurs (Ø aus Modell und "
+        "Analystenkonsens). Beispiel: Kurs 100 €, fairer Wert 130 € → **+30 %**.\n"
+        + ("" if DEMO else
+           "- **Hit Rate:** Anteil der letzten ~20 Jahre, in denen 12 Monate Halten "
+           "positiv gewesen wäre — historische Häufigkeit, keine Prognose.\n")
+        + "- **Konfidenz:** Wie stark die Methoden übereinstimmen (Divergenz, Anzahl "
+        "Methoden). **Niedrig** = Ergebnis mit Vorsicht interpretieren.\n\n"
+        "⚠️ Regelbasierte Schätzungen auf Basis frei verfügbarer Daten — "
+        "**keine Anlageberatung.**")
 
 st.divider()
 
@@ -371,7 +384,8 @@ st.divider()
 query = st.text_input("🔍 Suche (Ticker oder Name)", value="",
                       placeholder="z. B. SAP, Apple, Nestlé …")
 
-has_prob = "win_rate_1y" in df.columns and df["win_rate_1y"].notna().any()
+has_prob = (not DEMO) and "win_rate_1y" in df.columns and df["win_rate_1y"].notna().any()
+has_st = (not DEMO) and "st_score" in df.columns and df["st_score"].notna().any()
 
 with st.expander("🔎 Filter & Sortierung", expanded=not query):
     sectors = sorted([s for s in df.get("sector", pd.Series(dtype=str)).dropna().unique()])
@@ -381,26 +395,27 @@ with st.expander("🔎 Filter & Sortierung", expanded=not query):
         "Signal", options=present,
         default=[s for s in ("STRONG BUY", "BUY") if s in present])
     # Regler in ganzen Prozent (−50 % … +200 % bzw. 0 % … 100 %); intern /100.
-    min_upside = st.slider("Mindestens erwartetes Kurs-Plus", min_value=-50,
+    min_upside = st.slider("Min. Upside zum Fair Value", min_value=-50,
                            max_value=200, value=0, step=5, format="%d %%",
-                           help="Zeigt nur Aktien, die laut Modell mindestens so viel "
-                                "steigen könnten. 0 % = mindestens fair bewertet; "
-                                "+30 % = mindestens 30 % Luft nach oben.")
-    min_prob = st.slider("Mindestens so oft in der Vergangenheit im Plus",
-                         min_value=0, max_value=100, value=0, step=5, format="%d %%",
-                         disabled=not has_prob,
-                         help="Trefferquote: in wie vielen der letzten ~20 Jahre ein "
-                              "12-Monats-Halten Gewinn gebracht hätte.")
+                           help="Nur Titel, deren fairer Wert (Ø Modell/Konsens) mindestens "
+                                "so weit über dem Kurs liegt. 0 % = mindestens fair "
+                                "bewertet; +30 % = fairer Wert ≥ 1,3 × Kurs.")
+    min_prob = 0
+    if has_prob:
+        min_prob = st.slider("Min. Hit Rate (12M-Halten, ~20 J.)",
+                             min_value=0, max_value=100, value=0, step=5, format="%d %%",
+                             help="Historische Häufigkeit positiver 12-Monats-Renditen "
+                                  "(Jan→Jan). Keine Eintrittswahrscheinlichkeit.")
     has_conf = "confidence" in df.columns
     only_high_conf = st.checkbox("Nur hohe Konfidenz", value=False, disabled=not has_conf,
                                  help="Nur Titel, bei denen die Methoden gut übereinstimmen "
                                       "(geringe Divergenz, genug Methoden).")
-    sort_options = {"Kurspotenzial": "avg_upside", "Kurspotenzial (nur Modell)": "blended_upside",
-                    "Kurs": "price"}
+    sort_options = {"Upside (Ø Modell/Konsens)": "avg_upside",
+                    "Upside (nur Modell)": "blended_upside", "Kurs": "price"}
     if has_prob:
-        sort_options = {"Trefferquote": "win_rate_1y", **sort_options}
-    if "st_score" in df.columns and df["st_score"].notna().any():
-        sort_options["Kurzfrist-Score"] = "st_score"
+        sort_options["Hit Rate"] = "win_rate_1y"
+    if has_st:
+        sort_options["Momentum-Score"] = "st_score"
     sort_label = st.selectbox("Sortieren nach", list(sort_options.keys()))
     sort_col = sort_options[sort_label]
 
@@ -444,18 +459,30 @@ ORDERED_IDS = _view_ids + [t for t in df["yahoo"].astype(str).tolist()
 # =============================================================================
 # Tabs
 # =============================================================================
-tab_screener, tab_detail, tab_backtest, tab_short, tab_pdf = st.tabs(
-    ["📊 Screener", "🔍 Detail", "📉 Backtest", "⚡ Kurzfrist", "📄 PDF-Report"])
+if DEMO:
+    tab_screener, tab_detail, tab_backtest, tab_pdf = st.tabs(
+        ["📊 Screener", "🔍 Detail", "📉 Kurshistorie", "📄 PDF-Report"])
+    tab_short = None
+else:
+    tab_screener, tab_detail, tab_backtest, tab_short, tab_pdf = st.tabs(
+        ["📊 Screener", "🔍 Detail", "📉 Backtest", "📈 Momentum & Volatilität",
+         "📄 PDF-Report"])
 
 # --- Screener ----------------------------------------------------------------
 with tab_screener:
     core = {
         "yahoo": "Ticker", "security": "Name", "price": "Kurs",
-        "kgv_fwd": "KGV fwd", "avg_upside": "Kurspotenzial", "win_rate_1y": "Trefferquote",
-        "signal": "Signal", "confidence": "Konfidenz", "st_score": "Kurzfrist",
+        "kgv_fwd": "KGV fwd", "avg_upside": "Upside", "win_rate_1y": "Hit Rate",
+        "signal": "Signal", "confidence": "Konfidenz", "st_score": "Momentum",
         "rec_key": "Konsens",
     }
-    avail = {k: v for k, v in core.items() if k in view.columns}
+    if not has_prob:
+        core.pop("win_rate_1y")
+    if not has_st:
+        core.pop("st_score")
+    # Leere Spalten (z. B. Konsens-Empfehlung, wenn Yahoo sie nicht liefert) weglassen.
+    avail = {k: v for k, v in core.items()
+             if k in view.columns and view[k].replace("None", pd.NA).notna().any()}
     table = view[list(avail.keys())].rename(columns=avail)
 
     def _color_sig(val: str) -> str:
@@ -467,12 +494,12 @@ with tab_screener:
         fmt["Kurs"] = "{:,.2f} €"
     if "KGV fwd" in table:
         fmt["KGV fwd"] = "{:,.1f}x"
-    if "Kurspotenzial" in table:
-        fmt["Kurspotenzial"] = "{:+.1%}"
-    if "Trefferquote" in table:
-        fmt["Trefferquote"] = "{:.0%}"
-    if "Kurzfrist" in table:
-        fmt["Kurzfrist"] = "{:.0f}"
+    if "Upside" in table:
+        fmt["Upside"] = "{:+.1%}"
+    if "Hit Rate" in table:
+        fmt["Hit Rate"] = "{:.0%}"
+    if "Momentum" in table:
+        fmt["Momentum"] = "{:.0f}"
     conf_bg = {"Hoch": "#d7f7df", "Mittel": "#ffeb9c", "Niedrig": "#ffc7ce"}
 
     def _color_conf(val: str) -> str:
@@ -512,7 +539,8 @@ with tab_detail:
         m1, m2, m3 = st.columns(3)
         m1.metric("Kurs", _eur(row.get("price")))
         m2.metric("Blended Fair Value", _eur(row.get("blended_fair_value")))
-        m3.metric("Kurspotenzial", _pct(row.get("avg_upside")))
+        m3.metric("Upside", _pct(row.get("avg_upside")),
+                  help="Ø aus Upside zum Blended Fair Value und zum Analystenkonsens.")
         m4, m5, m6 = st.columns(3)
         m4.metric("KGV fwd", _mult(row.get("kgv_fwd")))
         m5.metric("Konfidenz", str(row.get("confidence") or "—"),
@@ -540,9 +568,11 @@ with tab_detail:
 
 # --- Backtest ----------------------------------------------------------------
 with tab_backtest:
-    st.markdown("**Backtest — 12-Monats-Halten, jahresweise über ~20 Jahre**")
-    st.caption("Wenn man Anfang eines Jahres gekauft und **12 Monate gehalten** hätte — "
-               "wie wäre es ausgegangen? Grün = Gewinn, Rot = Verlust.")
+    st.markdown("**Historische 12-Monats-Renditen (Kauf im Januar, 12 Monate "
+                "gehalten), ~20 Jahre**")
+    st.caption("Renditeprofil der Aktie, kein Backtest der Modellsignale. "
+               "Grün = positives, Rot = negatives Jahr. Hinweis: Survivorship Bias "
+               "(heutige Indexmitglieder).")
     if "annual_returns_json" not in df.columns:
         st.info("Backtest-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
     else:
@@ -562,18 +592,20 @@ with tab_backtest:
                 thin = len(rets) < MIN_BT_YEARS
                 if thin:
                     st.warning(
-                        f"⚠️ Nur **{len(rets)} Jahr(e)** Historie — Trefferquote und "
-                        f"Ø-Rendite sind **nicht aussagekräftig** (z. B. Neuemission/"
-                        f"Spinoff). Ein einzelnes Jahr kann durch den Börsenstart stark "
-                        f"verzerrt sein. Das Diagramm zeigt die vorhandenen Jahre nur "
-                        f"zur Orientierung.")
-                c1, c2, c3 = st.columns(3)
+                        f"⚠️ Nur **{len(rets)} Jahr(e)** Historie — Kennzahlen sind "
+                        f"**nicht aussagekräftig** (z. B. Neuemission/Spinoff). Ein "
+                        f"einzelnes Jahr kann durch den Börsenstart stark verzerrt sein. "
+                        f"Das Diagramm zeigt die vorhandenen Jahre nur zur Orientierung.")
                 # win_rate_1y/avg_return_1y sind für zu kurze Historie bereits NaN.
-                c1.metric("Trefferquote", _pct0(brow.get("win_rate_1y")),
-                          help="Anteil der Jahre mit positivem 12-Monats-Ergebnis "
-                               f"(erst ab {MIN_BT_YEARS} Jahren ausgewiesen).")
+                if DEMO:
+                    c2, c3 = st.columns(2)
+                else:
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Hit Rate", _pct0(brow.get("win_rate_1y")),
+                              help="Anteil der Jahre mit positivem 12-Monats-Ergebnis "
+                                   f"(erst ab {MIN_BT_YEARS} Jahren ausgewiesen).")
                 c2.metric("Ø 12M-Rendite", _pct(brow.get("avg_return_1y")))
-                c3.metric("Jahre getestet", str(len(rets)))
+                c3.metric("Jahre", str(len(rets)))
 
                 cdf = pd.DataFrame({
                     "Zeitraum": [f"{y}→{y + 1}" for y in years],
@@ -605,45 +637,44 @@ with tab_backtest:
                     "Vergangene Wertentwicklung ist keine Garantie für die Zukunft."
                 )
 
-# --- Kurzfrist-Chancen (hochspekulativ) --------------------------------------
-with tab_short:
-    st.markdown("### ⚡ Kurzfrist-Chancen")
-    st.error(
-        "**Hochspekulativ — keine Prognose, keine Anlageberatung.** Dieser Reiter "
-        "zeigt Titel, die (a) gerade **Aufwärts-Schwung** haben und (b) historisch "
-        "**stark schwanken** (großes Monats-Ausschlag-Potenzial). **Großes Potenzial "
-        "nach oben = genauso großes Risiko nach unten.** Solche Titel können in Wochen "
-        "+40 % **oder −40 %** machen. Das ist das Gegenteil des soliden Langfrist-Modells.")
+# --- Momentum & Volatilität (nicht im Präsentationsmodus) --------------------
+if tab_short is not None:
+    with tab_short:
+        st.markdown("### Momentum & Volatilität")
+        st.warning(
+            "Separater Faktor-Screen, **unabhängig vom Bewertungsmodell**. Kombiniert "
+            "Kursmomentum (1/3 Monate) mit der historischen Schwankungsbreite der "
+            "Monatsrenditen. Hohe Werte bedeuten höhere Volatilität in **beide** Richtungen. "
+            "Keine Prognose, keine Anlageberatung.")
 
-    if "st_score" not in df.columns or not df["st_score"].notna().any():
-        st.info("Kurzfrist-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
-    else:
-        min_score = st.slider("Mindest-Kurzfrist-Score (0–100)", 0, 100, 70, 5,
-                              help="Höher = stärkerer Schwung und größeres Ausschlag-"
-                                   "Potenzial. Rein relativ zum Rest des Universums.")
-        sv = df[df["st_score"].fillna(-1) >= min_score].copy()
-        sv = sv.sort_values("st_score", ascending=False)
-        st.caption(f"{len(sv)} Titel · sortiert nach Kurzfrist-Score")
+        if not has_st:
+            st.info("Momentum-Daten sind erst nach dem nächsten Cloud-Lauf verfügbar.")
+        else:
+            min_score = st.slider("Min. Momentum-Score (Perzentil 0–100)", 0, 100, 70, 5,
+                                  help="Perzentil-Rang im Universum: 50 % Momentum "
+                                       "(3M/1M), 50 % 90.-Perzentil der Monatsrenditen.")
+            sv = df[df["st_score"].fillna(-1) >= min_score].copy()
+            sv = sv.sort_values("st_score", ascending=False)
+            st.caption(f"{len(sv)} Titel · sortiert nach Momentum-Score")
 
-        cols = {"yahoo": "Ticker", "security": "Name", "price": "Kurs",
-                "mom_3m": "Schwung 3 Mon.", "mret_p90": "typ. gutes Monatsplus",
-                "mret_max": "bestes Monatsplus", "st_score": "Score"}
-        avail = {k: v for k, v in cols.items() if k in sv.columns}
-        tbl = sv[list(avail.keys())].rename(columns=avail).head(60)
-        fmt = {}
-        if "Kurs" in tbl:
-            fmt["Kurs"] = "{:,.2f} €"
-        for c in ("Schwung 3 Mon.", "typ. gutes Monatsplus", "bestes Monatsplus"):
-            if c in tbl:
-                fmt[c] = "{:+.0%}"
-        if "Score" in tbl:
-            fmt["Score"] = "{:.0f}"
-        st.dataframe(tbl.style.format(fmt, na_rep="—"), use_container_width=True,
-                     hide_index=True, height=min(560, 44 + 35 * len(tbl)))
-        st.caption("**Schwung 3 Mon.** = Kursverlauf der letzten 3 Monate · "
-                   "**typ. gutes Monatsplus** = was der Titel in guten Monaten historisch "
-                   "schaffte (90. Perzentil) · **bestes Monatsplus** = größter Monatssprung "
-                   "der Historie. Alles Vergangenheit — keine Garantie.")
+            cols = {"yahoo": "Ticker", "security": "Name", "price": "Kurs",
+                    "mom_3m": "Momentum 3M", "mret_p90": "Monatsrendite P90",
+                    "mret_max": "Monatsrendite max.", "st_score": "Score"}
+            avail = {k: v for k, v in cols.items() if k in sv.columns}
+            tbl = sv[list(avail.keys())].rename(columns=avail).head(60)
+            fmt = {}
+            if "Kurs" in tbl:
+                fmt["Kurs"] = "{:,.2f} €"
+            for c in ("Momentum 3M", "Monatsrendite P90", "Monatsrendite max."):
+                if c in tbl:
+                    fmt[c] = "{:+.0%}"
+            if "Score" in tbl:
+                fmt["Score"] = "{:.0f}"
+            st.dataframe(tbl.style.format(fmt, na_rep="—"), use_container_width=True,
+                         hide_index=True, height=min(560, 44 + 35 * len(tbl)))
+            st.caption("**Momentum 3M** = Kursveränderung der letzten 3 Monate · "
+                       "**Monatsrendite P90** = 90. Perzentil der historischen Monatsrenditen · "
+                       "**max.** = höchste Monatsrendite der Historie. Rein historisch.")
 
 # --- PDF-Report --------------------------------------------------------------
 with tab_pdf:
